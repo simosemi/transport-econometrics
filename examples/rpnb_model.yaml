@@ -1,0 +1,30 @@
+model:
+  dependent: crashes
+  offset: log_exposure
+  fixed:
+    - x1
+  random:
+    z1:
+      distribution: normal
+      start_mean: 0.0
+      start_sd: 0.25
+  group_id: group
+  intercept: true
+  correlated_random_parameters: false
+  missing: drop
+
+simulation:
+  draws: 128
+  draw_type: halton
+  seed: 2026
+
+estimation:
+  maxiter: 300
+  tolerance: 0.00001
+  covariance: bfgs
+  chunk_size: 10000
+  workers: 1
+  start_alpha: 0.5
+
+output:
+  directory: runs
