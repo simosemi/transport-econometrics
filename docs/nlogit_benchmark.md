@@ -38,6 +38,17 @@ Use `simulated_nlogit_benchmark_data.csv` in NLOGIT. The benchmark model is:
 - Two finite thresholds.
 - Halton simulation draws matching `rpopit_benchmark_model.yaml`.
 
+To benchmark four severity categories `[0, 1, 2, 3]` with three thresholds:
+
+```bash
+python -m rpopit.benchmark_nlogit \
+  --out validation_runs/nlogit_benchmark_4cat \
+  --categories 4
+```
+
+The generated NLOGIT template will include `threshold[1]`, `threshold[2]`, and
+`threshold[3]`.
+
 Export or manually enter NLOGIT results into:
 
 ```text
@@ -53,6 +64,7 @@ random_mean,z,-0.80,0.07
 random_sd,z,0.45,0.10
 threshold,threshold[1],-0.35,0.05
 threshold,threshold[2],0.85,0.06
+threshold,threshold[3],1.20,0.07
 log_likelihood,LL,-395.0,
 ```
 

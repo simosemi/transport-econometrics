@@ -200,34 +200,60 @@ def compare_with_nlogit(
     )
 
 
-def write_nlogit_template(path: str | Path, variables: list[str]) -> Path:
+def write_nlogit_template(
+    path: str | Path,
+    fixed_variables: list[str],
+    random_variables: list[str],
+    n_thresholds: int = 2,
+) -> Path:
     """Write a fill-in template for NLOGIT estimates."""
 
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    rows = [
-        {"component": "coefficient", "variable": "x", "estimate": "", "std_error": ""},
-        {"component": "random_mean", "variable": "z", "estimate": "", "std_error": ""},
-        {"component": "random_sd", "variable": "z", "estimate": "", "std_error": ""},
-        {
-            "component": "threshold",
-            "variable": "threshold[1]",
-            "estimate": "",
-            "std_error": "",
-        },
-        {
-            "component": "threshold",
-            "variable": "threshold[2]",
-            "estimate": "",
-            "std_error": "",
-        },
+    rows = []
+    for variable in fixed_variables:
+        rows.append(
+            {
+                "component": "coefficient",
+                "variable": variable,
+                "estimate": "",
+                "std_error": "",
+            }
+        )
+    for variable in random_variables:
+        rows.append(
+            {
+                "component": "random_mean",
+                "variable": variable,
+                "estimate": "",
+                "std_error": "",
+            }
+        )
+        rows.append(
+            {
+                "component": "random_sd",
+                "variable": variable,
+                "estimate": "",
+                "std_error": "",
+            }
+        )
+    for threshold_number in range(1, n_thresholds + 1):
+        rows.append(
+            {
+                "component": "threshold",
+                "variable": f"threshold[{threshold_number}]",
+                "estimate": "",
+                "std_error": "",
+            }
+        )
+    rows.append(
         {
             "component": "log_likelihood",
             "variable": "LL",
             "estimate": "",
             "std_error": "",
-        },
-    ]
+        }
+    )
     pd.DataFrame(rows).to_csv(output, index=False)
     return output
 

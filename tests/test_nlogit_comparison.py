@@ -1,5 +1,7 @@
 import pandas as pd
+import yaml
 
+from rpopit.benchmark_nlogit import main as benchmark_nlogit_main
 from rpopit.nlogit_comparison import (
     compare_with_nlogit,
     load_nlogit_canonical_table,
@@ -69,3 +71,32 @@ def test_compare_with_nlogit_exports_difference_tables(tmp_path):
     assert not report.log_likelihood.empty
     assert report.combined["abs_difference"].max() > 0.0
     assert paths["html"].exists()
+
+
+def test_benchmark_nlogit_categories_four_generates_three_thresholds(tmp_path):
+    output = tmp_path / "benchmark"
+    status = benchmark_nlogit_main(
+        [
+            "--out",
+            str(output),
+            "--groups",
+            "20",
+            "--observations-per-group",
+            "2",
+            "--draws",
+            "8",
+            "--categories",
+            "4",
+        ]
+    )
+
+    data = pd.read_csv(output / "simulated_nlogit_benchmark_data.csv")
+    template = pd.read_csv(output / "nlogit_results_template.csv")
+    with (output / "rpopit_benchmark_model.yaml").open("r", encoding="utf-8") as handle:
+        spec = yaml.safe_load(handle)
+
+    assert status == 0
+    assert set(data["severity"].unique()).issubset({0, 1, 2, 3})
+    assert spec["model"]["categories"] == [0, 1, 2, 3]
+    assert (template["component"] == "threshold").sum() == 3
+    assert "threshold[3]" in set(template["variable"])

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -27,6 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--draws", type=int, default=500)
     parser.add_argument("--seed", type=int, default=202406)
     parser.add_argument("--tolerance", type=float, default=1e-4)
+    parser.add_argument(
+        "--categories",
+        type=int,
+        default=3,
+        help="Number of ordered severity categories to simulate. Use 4 for [0,1,2,3].",
+    )
     return parser
 
 
@@ -34,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    thresholds = _thresholds_for_categories(args.categories)
+    categories = list(range(args.categories))
 
     data, truth = simulate_ordered_probit_data(
         n_groups=args.groups,
@@ -41,14 +50,14 @@ def main(argv: list[str] | None = None) -> int:
         fixed_betas={"x": 0.7},
         random_means={"z": -0.8},
         random_sds={"z": 0.45},
-        thresholds=(-0.35, 0.85),
+        thresholds=thresholds,
         seed=args.seed,
     )
     data_path = out_dir / "simulated_nlogit_benchmark_data.csv"
     data.to_csv(data_path, index=False)
     _write_truth(truth, out_dir / "simulated_truth.csv")
 
-    spec_dict = _benchmark_spec(args.draws, out_dir)
+    spec_dict = _benchmark_spec(args.draws, out_dir, categories)
     spec_path = out_dir / "rpopit_benchmark_model.yaml"
     with spec_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(spec_dict, handle, sort_keys=False)
@@ -56,8 +65,20 @@ def main(argv: list[str] | None = None) -> int:
     model = RandomParametersOrderedProbit.from_spec(parse_model_spec(spec_dict))
     results = model.fit(data, save_run=True, output_dir=out_dir / "rpopit_runs", export=True)
 
-    template_path = write_nlogit_template(out_dir / "nlogit_results_template.csv", ["x", "z"])
-    instructions_path = _write_nlogit_instructions(out_dir, data_path, spec_path, template_path)
+    template_path = write_nlogit_template(
+        out_dir / "nlogit_results_template.csv",
+        fixed_variables=["x"],
+        random_variables=["z"],
+        n_thresholds=args.categories - 1,
+    )
+    instructions_path = _write_nlogit_instructions(
+        out_dir,
+        data_path,
+        spec_path,
+        template_path,
+        categories,
+        args.categories - 1,
+    )
 
     print("Simulated benchmark data:", data_path)
     print("rpopit model spec:", spec_path)
@@ -76,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
                 "nlogit_results": str(args.nlogit_results),
                 "draws": args.draws,
                 "seed": args.seed,
+                "categories": args.categories,
+                "thresholds": args.categories - 1,
             },
         )
         paths = report.export(out_dir / "comparison_report")
@@ -90,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _benchmark_spec(draws: int, out_dir: Path) -> dict[str, object]:
+def _benchmark_spec(draws: int, out_dir: Path, categories: list[int]) -> dict[str, object]:
     return {
         "model": {
             "dependent": "severity",
@@ -103,7 +126,7 @@ def _benchmark_spec(draws: int, out_dir: Path) -> dict[str, object]:
                 }
             },
             "group_id": "group",
-            "categories": [0, 1, 2],
+            "categories": categories,
             "correlated_random_parameters": False,
             "missing": "drop",
         },
@@ -143,7 +166,12 @@ def _write_truth(truth: dict[str, object], path: Path) -> None:
 
 
 def _write_nlogit_instructions(
-    out_dir: Path, data_path: Path, spec_path: Path, template_path: Path
+    out_dir: Path,
+    data_path: Path,
+    spec_path: Path,
+    template_path: Path,
+    categories: list[int],
+    n_thresholds: int,
 ) -> Path:
     path = out_dir / "nlogit_run_instructions.md"
     path.write_text(
@@ -157,7 +185,7 @@ def _write_nlogit_instructions(
                 "",
                 "Fit an ordered probit model with one fixed coefficient `x`, one normally",
                 "distributed random coefficient `z`, grouped by `group`, and two thresholds",
-                "for severity categories `[0, 1, 2]`.",
+                f"for severity categories `{categories}`.",
                 "",
                 "Use the same simulation draw count and Halton draws specified in:",
                 "",
@@ -174,8 +202,10 @@ def _write_nlogit_instructions(
                 "coefficient,x,...,...",
                 "random_mean,z,...,...",
                 "random_sd,z,...,...",
-                "threshold,threshold[1],...,...",
-                "threshold,threshold[2],...,...",
+                *[
+                    f"threshold,threshold[{threshold_number}],...,..."
+                    for threshold_number in range(1, n_thresholds + 1)
+                ],
                 "log_likelihood,LL,...,",
                 "```",
                 "",
@@ -190,6 +220,16 @@ def _write_nlogit_instructions(
         encoding="utf-8",
     )
     return path
+
+
+def _thresholds_for_categories(categories: int) -> tuple[float, ...]:
+    if categories < 2:
+        raise ValueError("--categories must be at least 2.")
+    if categories == 3:
+        return (-0.35, 0.85)
+    if categories == 4:
+        return (-0.75, 0.15, 1.05)
+    return tuple(float(value) for value in np.linspace(-1.0, 1.0, categories - 1))
 
 
 if __name__ == "__main__":

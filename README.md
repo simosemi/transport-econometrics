@@ -214,6 +214,12 @@ Generate one simulated benchmark dataset and fit `rpopit`:
 python -m rpopit.benchmark_nlogit --out validation_runs/nlogit_benchmark
 ```
 
+For four severity categories `[0, 1, 2, 3]` and three thresholds:
+
+```powershell
+python -m rpopit.benchmark_nlogit --out validation_runs/nlogit_benchmark_4cat --categories 4
+```
+
 After running NLOGIT on the generated CSV and filling
 `nlogit_results_template.csv`, create the side-by-side report:
 
