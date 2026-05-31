@@ -1,0 +1,28 @@
+model:
+  dependent: severity
+  fixed:
+    - x
+  random:
+    z:
+      distribution: normal
+      start_mean: -0.2
+      start_sd: 0.3
+  group_id: group
+  categories: [0, 1, 2]
+  correlated_random_parameters: false
+  missing: drop
+
+simulation:
+  draws: 128
+  draw_type: halton
+  chunk_size: 10000
+  workers: 1
+  seed: 12345
+
+estimation:
+  maxiter: 500
+  tolerance: 0.0001
+  covariance: bfgs
+
+output:
+  directory: examples/output
