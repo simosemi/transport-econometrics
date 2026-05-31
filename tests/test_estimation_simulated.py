@@ -34,9 +34,10 @@ def test_simulated_random_parameter_recovery():
     results = model.fit(data, save_run=False)
     estimates = _estimate_map(results.parameter_table)
 
+    assert results.converged
     assert results.log_likelihood < 0.0
     assert estimates["threshold[1]"] < estimates["threshold[2]"]
     assert abs(estimates["beta_fixed[x]"] - truth["fixed_betas"]["x"]) < 0.45
-    assert abs(estimates["beta_random_mean[z]"] - truth["random_means"]["z"]) < 0.55
-    assert 0.05 < estimates["beta_random_sd[z]"] < 1.2
+    assert abs(estimates["beta_random_mean[z]"] - truth["random_means"]["z"]) < 0.25
+    assert abs(estimates["beta_random_sd[z]"] - truth["random_sds"]["z"]) < 0.25
     assert np.isfinite(results.parameter_table["std_error"]).all()

@@ -131,7 +131,7 @@ def test_random_parameter_near_zero_sd_matches_fixed_only_ordered_probit():
     assert random["beta_random_sd[z]"] < 1e-3
 
 
-def test_simulated_log_likelihood_stabilizes_as_draws_increase():
+def test_increasing_halton_draws_stabilizes_random_parameter_log_likelihood():
     data, _ = simulate_ordered_probit_data(
         n_groups=70,
         observations_per_group=2,
