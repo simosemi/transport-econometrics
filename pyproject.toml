@@ -22,6 +22,9 @@ dev = ["pytest>=7.0", "statsmodels>=0.14"]
 
 [project.scripts]
 rpopit = "rpopit.cli:main"
+validate-hsis = "rpopit.validate_hsis_data:main"
+compare-models = "rpopit.model_comparison_report:main"
+benchmark-nlogit = "rpopit.benchmark_nlogit:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

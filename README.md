@@ -184,8 +184,17 @@ python examples/run_example.py
 HSIS-style validation examples and scripts are included:
 
 ```powershell
-python validation_suite/validate_hsis_data.py --data crashes.csv --schema examples/hsis_schema.yaml --out validation_runs/hsis_validation
-python validation_suite/model_comparison_report.py --data crashes.csv --schema examples/hsis_schema.yaml --spec examples/hsis_model.yaml --out validation_runs/hsis_model_comparison
+python -m rpopit.validate_hsis_data --help
+python -m rpopit.model_comparison_report --help
+validate-hsis --help
+compare-models --help
+```
+
+Example real-data commands:
+
+```powershell
+python -m rpopit.validate_hsis_data --data crashes.csv --schema examples/hsis_schema.yaml --out validation_runs/hsis_validation
+python -m rpopit.model_comparison_report --data crashes.csv --schema examples/hsis_schema.yaml --spec examples/hsis_model.yaml --out validation_runs/hsis_model_comparison
 ```
 
 The model comparison report exports LL, AIC, BIC, McFadden pseudo-R2,
@@ -196,6 +205,25 @@ and Random Parameters Ordered Probit. See
 The exact threshold parameterization and proof that `mu1 < mu2 < mu3` is
 guaranteed are in
 [docs/threshold_parameterization.md](docs/threshold_parameterization.md).
+
+## NLOGIT Benchmark
+
+Generate one simulated benchmark dataset and fit `rpopit`:
+
+```powershell
+python -m rpopit.benchmark_nlogit --out validation_runs/nlogit_benchmark
+```
+
+After running NLOGIT on the generated CSV and filling
+`nlogit_results_template.csv`, create the side-by-side report:
+
+```powershell
+python -m rpopit.benchmark_nlogit --out validation_runs/nlogit_benchmark --nlogit-results validation_runs/nlogit_benchmark/nlogit_results_template.csv
+```
+
+The report exports coefficients, thresholds, random-parameter means,
+random-parameter SDs, log-likelihood, and highlighted differences. See
+[docs/nlogit_benchmark.md](docs/nlogit_benchmark.md).
 
 ## Tests
 

@@ -9,18 +9,28 @@ The scripts never modify the raw CSV.
 - `examples/hsis_model.yaml`: example Random Parameters Ordered Probit spec.
 - `examples/hsis_schema.yaml`: machine-readable schema used by validation.
 - `examples/hsis_csv_schema.csv`: tabular CSV schema for review/editing.
-- `validation_suite/validate_hsis_data.py`: schema and missing-value validation.
-- `validation_suite/model_comparison_report.py`: Ordered Probit vs RPOPIT report.
+- `src/rpopit/validate_hsis_data.py`: schema and missing-value validation CLI.
+- `src/rpopit/model_comparison_report.py`: Ordered Probit vs RPOPIT report CLI.
+- `validation_suite/*.py`: compatibility wrappers for older path-based commands.
 - `benchmarks/benchmark_hsis_large_sample.py`: large-sample likelihood benchmark.
 
 ## Validate Data
 
 ```bash
-python validation_suite/validate_hsis_data.py \
+python -m rpopit.validate_hsis_data \
   --data /path/to/hsis_crashes.csv \
   --schema examples/hsis_schema.yaml \
   --out validation_runs/hsis_validation \
   --missing drop
+```
+
+After `python -m pip install -e .`, the console script form is also available:
+
+```bash
+validate-hsis \
+  --data /path/to/hsis_crashes.csv \
+  --schema examples/hsis_schema.yaml \
+  --out validation_runs/hsis_validation
 ```
 
 Outputs:
@@ -39,7 +49,17 @@ folder; the raw input file is never changed.
 ## Model Comparison Report
 
 ```bash
-python validation_suite/model_comparison_report.py \
+python -m rpopit.model_comparison_report \
+  --data /path/to/hsis_crashes.csv \
+  --schema examples/hsis_schema.yaml \
+  --spec examples/hsis_model.yaml \
+  --out validation_runs/hsis_model_comparison
+```
+
+Console script form:
+
+```bash
+compare-models \
   --data /path/to/hsis_crashes.csv \
   --schema examples/hsis_schema.yaml \
   --spec examples/hsis_model.yaml \

@@ -1,0 +1,7 @@
+component,variable,estimate,std_error
+coefficient,x,,
+random_mean,z,,
+random_sd,z,,
+threshold,threshold[1],,
+threshold,threshold[2],,
+log_likelihood,LL,,
