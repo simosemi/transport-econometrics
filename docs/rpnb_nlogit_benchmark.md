@@ -13,7 +13,7 @@ This creates:
 
 ```text
 validation_runs/rpnb_nlogit_benchmark/
-  simulated_rpnb_nlogit_benchmark_data.csv
+  simulated_nlogit_benchmark_data.csv
   simulated_truth.csv
   rpnb_benchmark_model.yaml
   nlogit_results_template.csv
@@ -39,7 +39,7 @@ The simulated data include:
 
 ## 2. Run NLOGIT on the Same CSV
 
-Use `simulated_rpnb_nlogit_benchmark_data.csv` in NLOGIT.
+Use `simulated_nlogit_benchmark_data.csv` in NLOGIT.
 
 Benchmark model:
 
@@ -103,7 +103,7 @@ The report exports:
 
 ```text
 comparison_report/
-  nlogit_rpnb_comparison.csv
+  nlogit_rpnb_parameter_comparison.csv
   coefficients_comparison.csv
   random_parameter_means_comparison.csv
   random_parameter_sds_comparison.csv

@@ -40,7 +40,7 @@ class NlogitComparisonReport:
         directory = Path(output_dir)
         directory.mkdir(parents=True, exist_ok=True)
         paths = {
-            "combined": directory / "nlogit_rpnb_comparison.csv",
+            "combined": directory / "nlogit_rpnb_parameter_comparison.csv",
             "coefficients": directory / "coefficients_comparison.csv",
             "random_means": directory / "random_parameter_means_comparison.csv",
             "random_sds": directory / "random_parameter_sds_comparison.csv",

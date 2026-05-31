@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         alpha=0.60,
         seed=args.seed,
     )
-    data_path = out_dir / "simulated_rpnb_nlogit_benchmark_data.csv"
+    data_path = out_dir / "simulated_nlogit_benchmark_data.csv"
     data.to_csv(data_path, index=False)
     _write_truth(truth, out_dir / "simulated_truth.csv")
 
@@ -219,7 +219,7 @@ def _write_nlogit_instructions(
                 "NLOGIT command sketch to adapt to your local NLOGIT syntax/version:",
                 "",
                 "```text",
-                "READ; FILE = simulated_rpnb_nlogit_benchmark_data.csv$",
+                "READ; FILE = simulated_nlogit_benchmark_data.csv$",
                 "",
                 "NEGBIN ; Lhs = crashes",
                 "       ; Rhs = ONE, x1, z1",

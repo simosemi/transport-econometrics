@@ -121,7 +121,7 @@ def test_benchmark_nlogit_generates_offset_templates(tmp_path):
         ]
     )
 
-    data = pd.read_csv(output / "simulated_rpnb_nlogit_benchmark_data.csv")
+    data = pd.read_csv(output / "simulated_nlogit_benchmark_data.csv")
     template = pd.read_csv(output / "nlogit_results_template.csv")
     prediction_template = pd.read_csv(output / "nlogit_predicted_means_template.csv")
     with (output / "rpnb_benchmark_model.yaml").open("r", encoding="utf-8") as handle:
