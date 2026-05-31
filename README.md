@@ -157,7 +157,30 @@ The test suite includes:
 - Known-parameter simulated-data recovery for fixed and random parameters.
 - Likelihood checks against direct NB2 calculations.
 - Fixed-only negative binomial validation against statsmodels.
+- RPNB/NLOGIT benchmark file generation and comparison helpers.
 
 ```powershell
 pytest tests/test_rpnb_*.py
 ```
+
+## NLOGIT Benchmark
+
+Generate one simulated benchmark dataset with exposure/offset, fit RPNB, and
+write NLOGIT parameter and predicted-mean templates:
+
+```powershell
+python -m rpnb.benchmark_nlogit --out validation_runs/rpnb_nlogit_benchmark
+```
+
+After running NLOGIT on the generated CSV and filling the templates:
+
+```powershell
+python -m rpnb.benchmark_nlogit `
+  --out validation_runs/rpnb_nlogit_benchmark `
+  --nlogit-results validation_runs/rpnb_nlogit_benchmark/nlogit_results_template.csv `
+  --nlogit-predictions validation_runs/rpnb_nlogit_benchmark/nlogit_predicted_means_template.csv
+```
+
+The comparison report checks coefficients, random-parameter mean and SD,
+`alpha`, fixed offset handling, predicted means, and log likelihood. See
+[docs/rpnb_nlogit_benchmark.md](docs/rpnb_nlogit_benchmark.md).
