@@ -129,6 +129,8 @@ mu_1 < mu_2 < mu_3 < ...
 ```
 
 This avoids invalid ordered probit probabilities during optimization.
+See `docs/threshold_parameterization.md` for the exact internal mapping and a
+short proof for the three-threshold case.
 
 ## Numerical Stability
 

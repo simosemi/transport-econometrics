@@ -179,6 +179,24 @@ print(results.fit_statistics)
 python examples/run_example.py
 ```
 
+## Real Data Validation
+
+HSIS-style validation examples and scripts are included:
+
+```powershell
+python validation_suite/validate_hsis_data.py --data crashes.csv --schema examples/hsis_schema.yaml --out validation_runs/hsis_validation
+python validation_suite/model_comparison_report.py --data crashes.csv --schema examples/hsis_schema.yaml --spec examples/hsis_model.yaml --out validation_runs/hsis_model_comparison
+```
+
+The model comparison report exports LL, AIC, BIC, McFadden pseudo-R2,
+coefficient tables, and random-parameter standard deviations for Ordered Probit
+and Random Parameters Ordered Probit. See
+[docs/real_data_validation.md](docs/real_data_validation.md).
+
+The exact threshold parameterization and proof that `mu1 < mu2 < mu3` is
+guaranteed are in
+[docs/threshold_parameterization.md](docs/threshold_parameterization.md).
+
 ## Tests
 
 ```powershell

@@ -1,0 +1,67 @@
+columns:
+  severity:
+    role: dependent
+    type: integer
+    required: true
+    allow_missing: false
+    allowed_values: [0, 1, 2, 3]
+    description: Ordered crash severity category from least to most severe.
+  corridor_id:
+    role: group
+    type: string
+    required: true
+    allow_missing: false
+    description: Corridor, route, segment, or other panel grouping ID.
+  speed_category:
+    role: random
+    type: numeric
+    required: true
+    allow_missing: false
+    description: Speed category covariate used as a random parameter.
+  Ln_Hourly_Volume:
+    role: random
+    type: numeric
+    required: true
+    allow_missing: false
+    description: Natural log of hourly traffic volume.
+  rest1_binary:
+    role: random
+    type: binary
+    required: true
+    allow_missing: false
+    allowed_values: [0, 1]
+    description: Binary indicator for rest-area or related roadway context.
+  interstate_binary:
+    role: fixed
+    type: binary
+    required: true
+    allow_missing: false
+    allowed_values: [0, 1]
+    description: Interstate facility indicator.
+  urban_binary:
+    role: fixed
+    type: binary
+    required: true
+    allow_missing: false
+    allowed_values: [0, 1]
+    description: Urban area indicator.
+  lighting_dark_binary:
+    role: fixed
+    type: binary
+    required: true
+    allow_missing: false
+    allowed_values: [0, 1]
+    description: Dark lighting condition indicator.
+  weather_adverse_binary:
+    role: fixed
+    type: binary
+    required: true
+    allow_missing: false
+    allowed_values: [0, 1]
+    description: Rain, snow, fog, or other adverse weather indicator.
+  crash_year:
+    role: audit
+    type: integer
+    required: false
+    allow_missing: true
+    description: Crash year retained for validation and stratified checks.

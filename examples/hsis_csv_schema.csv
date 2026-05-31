@@ -1,0 +1,11 @@
+column,role,type,required,allow_missing,allowed_values,description
+severity,dependent,integer,true,false,0|1|2|3,Ordered crash severity category from least to most severe.
+corridor_id,group,string,true,false,,Corridor route segment or year grouping ID.
+speed_category,random,numeric,true,false,,Speed category covariate used as a random parameter.
+Ln_Hourly_Volume,random,numeric,true,false,,Natural log of hourly traffic volume.
+rest1_binary,random,binary,true,false,0|1,Binary indicator for rest-area or related roadway context.
+interstate_binary,fixed,binary,true,false,0|1,Interstate facility indicator.
+urban_binary,fixed,binary,true,false,0|1,Urban area indicator.
+lighting_dark_binary,fixed,binary,true,false,0|1,Dark lighting condition indicator.
+weather_adverse_binary,fixed,binary,true,false,0|1,Adverse weather indicator.
+crash_year,audit,integer,false,true,,Crash year retained for validation and stratified checks.

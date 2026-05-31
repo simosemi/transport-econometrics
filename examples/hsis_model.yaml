@@ -1,0 +1,39 @@
+model:
+  dependent: severity
+  fixed:
+    - interstate_binary
+    - urban_binary
+    - lighting_dark_binary
+    - weather_adverse_binary
+  random:
+    speed_category:
+      distribution: normal
+      start_mean: 0.0
+      start_sd: 0.3
+    Ln_Hourly_Volume:
+      distribution: normal
+      start_mean: 0.0
+      start_sd: 0.3
+    rest1_binary:
+      distribution: normal
+      start_mean: 0.0
+      start_sd: 0.3
+  group_id: corridor_id
+  categories: [0, 1, 2, 3]
+  correlated_random_parameters: false
+  missing: drop
+
+simulation:
+  draws: 500
+  draw_type: halton
+  chunk_size: 10000
+  workers: 8
+  seed: 12345
+
+estimation:
+  maxiter: 1000
+  tolerance: 0.0001
+  covariance: bfgs
+
+output:
+  directory: validation_runs/hsis
