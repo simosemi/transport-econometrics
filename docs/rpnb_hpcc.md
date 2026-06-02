@@ -44,7 +44,8 @@ Optimizer choice is configured in the YAML spec:
 estimation:
   optimizer: bfgs
   multistart: 1
-  random_seed: 12345
+  multistart_seed: 12345
+  multistart_scale: 0.25
 ```
 
 Supported values are `bfgs`, `lbfgsb`, `nelder-mead`, and `powell`. BFGS is the

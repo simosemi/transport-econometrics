@@ -19,7 +19,8 @@ def test_parse_random_parameter_mapping_list():
             "estimation": {
                 "optimizer": "lbfgsb",
                 "multistart": 3,
-                "random_seed": 987,
+                "multistart_seed": 987,
+                "multistart_scale": 0.5,
             },
         }
     )
@@ -29,6 +30,7 @@ def test_parse_random_parameter_mapping_list():
     assert spec.optimizer == "lbfgsb"
     assert spec.multistart == 3
     assert spec.multistart_random_seed == 987
+    assert spec.multistart_scale == 0.5
 
 
 def test_parse_generic_ordered_model_spec():

@@ -53,7 +53,8 @@ model:
 estimation:
   optimizer: bfgs
   multistart: 1
-  random_seed: 12345
+  multistart_seed: 12345
+  multistart_scale: 0.25
 ```
 
 ## rpopit Ordered Probit Model
@@ -94,7 +95,8 @@ model:
 estimation:
   optimizer: bfgs
   multistart: 1
-  random_seed: 12345
+  multistart_seed: 12345
+  multistart_scale: 0.25
 ```
 
 ## Validation Rules
@@ -196,12 +198,15 @@ BFGS is the default when `optimizer` is omitted.
 
 Set `multistart` to an integer greater than 1 to run multiple local
 optimizations. The first start is the supplied/default vector; remaining starts
-are seeded perturbations around that vector using `random_seed`.
+are seeded perturbations around that vector using `multistart_seed` and
+`multistart_scale`.
 
 The diagnostics include:
 
 - optimizer method
 - convergence code and convergence message
+- convergence quality (`converged_clean`, `near_converged`, `usable_warning`,
+  or `not_converged`)
 - gradient norm
 - Hessian condition number
 - largest and smallest absolute parameter magnitudes
@@ -220,10 +225,25 @@ Boolean columns also report whether the run terminated due to each named reason.
 
 When multi-start is enabled, RPNB and rpopit export:
 
-- `multistart_summary.csv`, with starting log-likelihood, final log-likelihood,
-  convergence status, optimizer, and best-start flag
+- `multistart_summary.csv`, `multistart_summary.xlsx`, and
+  `multistart_summary.html`, with starting log-likelihood, final
+  log-likelihood, AIC, BIC, convergence status, convergence quality, gradient
+  norm, optimizer, best-start flag, and starting/final parameter vectors
 - `multistart_local_solutions.csv`, with natural parameter estimates for every
   local solution
+- `nlogit_style_report.txt`, a plain-text report with NLOGIT-style model
+  metrics, random parameter mean and SD sections, dispersion section when
+  applicable, and significance stars
+
+RPNB run directories can be compared after estimation with:
+
+```powershell
+python -m rpnb.compare_runs --runs run1 run2 run3 --out comparison_report
+```
+
+The comparison report exports CSV, Excel, and HTML files for LL, AIC, BIC,
+alpha, convergence quality, parameter count, random parameter means, and random
+parameter SDs.
 
 Backward-compatible shorthand remains available for continuous-only models:
 

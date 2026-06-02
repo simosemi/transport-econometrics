@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from rpopit.draws import generate_draws
 from rpopit.likelihood import simulated_log_likelihood
 from rpopit.marginal_effects import average_marginal_effects, predicted_probabilities
 from rpopit.optimizer import (
+    convergence_quality,
     covariance_from_hessian,
     estimate_mle,
     finite_difference_hessian,
@@ -73,6 +75,7 @@ class RandomParametersOrderedProbit:
         optimizer: str = "bfgs",
         multistart: int = 1,
         multistart_random_seed: int | None = 12345,
+        multistart_scale: float = 0.25,
         covariance: str = "bfgs",
         chunk_size: int | None = 10_000,
         workers: int = 1,
@@ -105,6 +108,7 @@ class RandomParametersOrderedProbit:
         self.optimizer = normalize_optimizer(optimizer)
         self.multistart = int(multistart)
         self.multistart_random_seed = multistart_random_seed
+        self.multistart_scale = float(multistart_scale)
         self.covariance = covariance.lower()
         self.chunk_size = chunk_size
         self.workers = int(workers)
@@ -116,6 +120,8 @@ class RandomParametersOrderedProbit:
             raise ValueError("draws must be at least 1.")
         if self.multistart < 1:
             raise ValueError("multistart must be at least 1.")
+        if self.multistart_scale < 0:
+            raise ValueError("multistart_scale must be non-negative.")
         if self.covariance not in {"bfgs", "hessian"}:
             raise ValueError("covariance must be 'bfgs' or 'hessian'.")
         if self.chunk_size is not None and self.chunk_size < 1:
@@ -152,6 +158,7 @@ class RandomParametersOrderedProbit:
             optimizer=spec.optimizer,
             multistart=spec.multistart,
             multistart_random_seed=spec.multistart_random_seed,
+            multistart_scale=spec.multistart_scale,
             covariance=spec.covariance,
             chunk_size=spec.chunk_size,
             workers=spec.workers,
@@ -319,6 +326,7 @@ class RandomParametersOrderedProbit:
             start_params,
             effective_multistart,
             self.multistart_random_seed,
+            self.multistart_scale,
         )
         multistart_records: list[dict[str, Any]] = []
         for start_id, candidate_start in enumerate(start_vectors, start=1):
@@ -341,6 +349,7 @@ class RandomParametersOrderedProbit:
             multistart_records.append(
                 {
                     "start_id": start_id,
+                    "starting_params": candidate_start.copy(),
                     "starting_log_likelihood": starting_log_likelihood,
                     "diagnostics": start_diagnostics,
                 }
@@ -356,6 +365,9 @@ class RandomParametersOrderedProbit:
             multistart_records,
             selected_start_id,
             self.optimizer,
+            n_parameters=diagnostics.params.size,
+            n_observations=len(work),
+            tolerance=self.tolerance,
         )
         local_solutions = self._local_solutions_table(
             multistart_records,
@@ -483,10 +495,16 @@ class RandomParametersOrderedProbit:
             diagnostics.message,
             hessian_condition_number,
         )
+        selected_convergence_quality = convergence_quality(
+            diagnostics.converged,
+            diagnostics.gradient_norm,
+            self.tolerance,
+        )
         convergence = {
             "converged": diagnostics.converged,
             "status": diagnostics.status,
             "message": diagnostics.message,
+            "convergence_quality": selected_convergence_quality,
             "optimizer_method": diagnostics.method,
             "optimizer_status_code": diagnostics.status,
             "optimizer_message": diagnostics.message,
@@ -562,6 +580,8 @@ class RandomParametersOrderedProbit:
                 "optimizer": self.optimizer,
                 "multistart": self.multistart,
                 "random_seed": self.multistart_random_seed,
+                "multistart_seed": self.multistart_random_seed,
+                "multistart_scale": self.multistart_scale,
                 "covariance": self.covariance,
                 "chunk_size": self.chunk_size,
                 "workers": self.workers,
@@ -892,13 +912,14 @@ def _multistart_vectors(
     base: np.ndarray,
     count: int,
     seed: int | None,
+    scale_factor: float,
 ) -> list[np.ndarray]:
     base = np.asarray(base, dtype=float)
     starts = [base.copy()]
     if count <= 1:
         return starts
     rng = np.random.default_rng(seed)
-    scale = 0.25 * np.maximum(np.abs(base), 1.0)
+    scale = float(scale_factor) * np.maximum(np.abs(base), 1.0)
     for _ in range(1, count):
         starts.append(base + rng.normal(loc=0.0, scale=scale, size=base.size))
     return starts
@@ -908,28 +929,47 @@ def _multistart_summary_table(
     records: Sequence[dict[str, Any]],
     selected_start_id: int,
     optimizer: str,
+    n_parameters: int,
+    n_observations: int,
+    tolerance: float,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for record in records:
         start_id = int(record["start_id"])
         diagnostics = record["diagnostics"]
+        log_likelihood = float(diagnostics.log_likelihood)
         rows.append(
             {
                 "start_id": start_id,
                 "is_best": start_id == selected_start_id,
                 "optimizer": optimizer,
                 "starting_log_likelihood": float(record["starting_log_likelihood"]),
-                "final_log_likelihood": diagnostics.log_likelihood,
+                "final_log_likelihood": log_likelihood,
+                "AIC": 2.0 * n_parameters - 2.0 * log_likelihood,
+                "BIC": np.log(n_observations) * n_parameters - 2.0 * log_likelihood,
                 "converged": diagnostics.converged,
+                "convergence_quality": convergence_quality(
+                    diagnostics.converged,
+                    diagnostics.gradient_norm,
+                    tolerance,
+                ),
                 "status": diagnostics.status,
                 "message": diagnostics.message,
                 "iterations": diagnostics.iterations,
                 "function_evaluations": diagnostics.function_evaluations,
                 "gradient_norm": diagnostics.gradient_norm,
                 "hessian_condition_number": diagnostics.hessian_condition_number,
+                "starting_parameter_vector": _format_parameter_vector(
+                    record["starting_params"]
+                ),
+                "final_parameter_vector": _format_parameter_vector(diagnostics.params),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _format_parameter_vector(params: np.ndarray) -> str:
+    return json.dumps([float(value) for value in np.asarray(params, dtype=float)])
 
 
 def _sum_optional_ints(values: Iterable[int | None]) -> int:

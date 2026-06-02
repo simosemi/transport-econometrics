@@ -171,6 +171,7 @@ def _assert_optimizer_diagnostics_exported(results, html_name):
         "optimizer_message",
         "convergence_code",
         "convergence_message",
+        "convergence_quality",
         "gradient_norm",
         "hessian_condition_number",
         "largest_parameter_magnitude",

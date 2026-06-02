@@ -87,7 +87,8 @@ Recommended YAML settings for large runs:
 estimation:
   optimizer: bfgs
   multistart: 1
-  random_seed: 12345
+  multistart_seed: 12345
+  multistart_scale: 0.25
   maxiter: 1000
   tolerance: 0.0001
   covariance: bfgs

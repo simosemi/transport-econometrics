@@ -68,6 +68,8 @@ def estimate_mle(
         jac = np.asarray(result.jac, dtype=float)
         if jac.size:
             gradient_norm = float(np.linalg.norm(jac, ord=np.inf))
+    if gradient_norm is None:
+        gradient_norm = finite_difference_gradient_norm(objective, np.asarray(result.x, dtype=float))
 
     hess_inv = hess_inv_to_array(getattr(result, "hess_inv", None))
     params = np.asarray(result.x, dtype=float)
@@ -202,10 +204,54 @@ def optimizer_termination_report(
     }
 
 
+def convergence_quality(
+    converged: bool,
+    gradient_norm: float | None,
+    tolerance: float,
+) -> str:
+    """Grade optimizer convergence quality from SciPy success and gradient size."""
+
+    if gradient_norm is None or not np.isfinite(gradient_norm):
+        return "not_converged"
+    if converged and gradient_norm < tolerance:
+        return "converged_clean"
+    if (not converged) and gradient_norm < 0.01:
+        return "near_converged"
+    if gradient_norm < 0.10:
+        return "usable_warning"
+    return "not_converged"
+
+
 def _condition_indicates_singular_hessian(condition: float | None) -> bool:
     if condition is None:
         return False
     return (not np.isfinite(condition)) or condition >= 1e12
+
+
+def finite_difference_gradient_norm(
+    objective: Callable[[np.ndarray], float],
+    params: np.ndarray,
+    step: float = 1e-6,
+) -> float | None:
+    """Return an infinity-norm finite-difference gradient estimate."""
+
+    x = np.asarray(params, dtype=float)
+    if x.size == 0:
+        return 0.0
+    gradient = np.empty(x.size, dtype=float)
+    steps = step * np.maximum(np.abs(x), 1.0)
+    try:
+        for index in range(x.size):
+            step_vector = np.zeros(x.size, dtype=float)
+            step_vector[index] = steps[index]
+            f_plus = float(objective(x + step_vector))
+            f_minus = float(objective(x - step_vector))
+            gradient[index] = (f_plus - f_minus) / (2.0 * steps[index])
+    except (FloatingPointError, ValueError, OverflowError):
+        return None
+    if not np.isfinite(gradient).all():
+        return None
+    return float(np.linalg.norm(gradient, ord=np.inf))
 
 
 def finite_difference_hessian(

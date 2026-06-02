@@ -76,6 +76,7 @@ class ModelSpec:
     optimizer: str = "bfgs"
     multistart: int = 1
     multistart_random_seed: int | None = 12345
+    multistart_scale: float = 0.25
     covariance: str = "bfgs"
     chunk_size: int | None = 10_000
     workers: int = 1
@@ -183,6 +184,11 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
     multistart_random_seed = (
         None if multistart_random_seed is None else int(multistart_random_seed)
     )
+    multistart_scale = float(
+        _first_present(estimation, "multistart_scale", "multi_start_scale", default=0.25)
+    )
+    if multistart_scale < 0:
+        raise ValueError("multistart_scale must be non-negative.")
     covariance = str(_first_present(estimation, "covariance", "covariance_type", default="bfgs"))
     chunk_size_raw = _first_present(
         estimation, "chunk_size", "likelihood_chunk_size", default=None
@@ -226,6 +232,7 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
         optimizer=optimizer.lower(),
         multistart=multistart,
         multistart_random_seed=multistart_random_seed,
+        multistart_scale=multistart_scale,
         covariance=covariance.lower(),
         chunk_size=chunk_size,
         workers=workers,

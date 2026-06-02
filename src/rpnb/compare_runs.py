@@ -1,0 +1,198 @@
+"""Compare completed RPNB run directories."""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Sequence
+
+import pandas as pd
+
+
+@dataclass
+class RPNBRunComparison:
+    """Tables comparing completed RPNB runs."""
+
+    metrics: pd.DataFrame
+    random_parameter_means: pd.DataFrame
+    random_parameter_sds: pd.DataFrame
+
+    def export(self, output_dir: str | Path) -> dict[str, Path]:
+        directory = Path(output_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        paths = {
+            "metrics_csv": directory / "comparison_metrics.csv",
+            "random_means_csv": directory / "random_parameter_means.csv",
+            "random_sds_csv": directory / "random_parameter_sds.csv",
+            "excel": directory / "rpnb_run_comparison.xlsx",
+            "html": directory / "rpnb_run_comparison.html",
+        }
+        self.metrics.to_csv(paths["metrics_csv"], index=False)
+        self.random_parameter_means.to_csv(paths["random_means_csv"], index=False)
+        self.random_parameter_sds.to_csv(paths["random_sds_csv"], index=False)
+        with pd.ExcelWriter(paths["excel"], engine="openpyxl") as writer:
+            self.metrics.to_excel(writer, sheet_name="metrics", index=False)
+            self.random_parameter_means.to_excel(
+                writer, sheet_name="random_means", index=False
+            )
+            self.random_parameter_sds.to_excel(
+                writer, sheet_name="random_sds", index=False
+            )
+        paths["html"].write_text(self._to_html(), encoding="utf-8")
+        return paths
+
+    def _to_html(self) -> str:
+        sections = [
+            "<h1>RPNB Run Comparison</h1>",
+            "<h2>Fit Metrics</h2>",
+            self.metrics.to_html(index=False),
+            "<h2>Random Parameter Means</h2>",
+            self.random_parameter_means.to_html(index=False),
+            "<h2>Random Parameter SDs</h2>",
+            self.random_parameter_sds.to_html(index=False),
+        ]
+        return "\n".join(
+            [
+                "<!doctype html>",
+                "<html><head><meta charset=\"utf-8\"><title>RPNB run comparison</title>",
+                "<style>body{font-family:Arial,sans-serif;max-width:1200px;margin:2rem auto;}"
+                "table{border-collapse:collapse;margin-bottom:2rem;}td,th{border:1px solid #ddd;"
+                "padding:0.35rem 0.5rem;}th{background:#f5f5f5;}</style>",
+                "</head><body>",
+                *sections,
+                "</body></html>",
+            ]
+        )
+
+
+def compare_runs(run_dirs: Sequence[str | Path]) -> RPNBRunComparison:
+    """Build comparison tables for completed RPNB run directories."""
+
+    metric_rows: list[dict[str, Any]] = []
+    random_mean_rows: list[dict[str, Any]] = []
+    random_sd_rows: list[dict[str, Any]] = []
+    for run_dir in run_dirs:
+        run_path = Path(run_dir)
+        fit_statistics = _read_single_row(run_path / "fit_statistics.csv")
+        convergence = _read_optional_single_row(run_path / "convergence.csv")
+        coefficients = _read_coefficients(run_path / "coefficients.csv")
+        run_label = run_path.name
+
+        metric_rows.append(
+            {
+                "run": run_label,
+                "run_dir": str(run_path),
+                "LL": _get(fit_statistics, "log_likelihood"),
+                "AIC": _get(fit_statistics, "AIC"),
+                "BIC": _get(fit_statistics, "BIC"),
+                "alpha": _alpha(fit_statistics, coefficients),
+                "convergence_quality": _get(convergence, "convergence_quality"),
+                "n_parameters": _get(fit_statistics, "n_parameters"),
+            }
+        )
+        random_mean_rows.extend(
+            _parameter_rows(run_label, run_path, coefficients, "random_mean")
+        )
+        random_sd_rows.extend(
+            _parameter_rows(run_label, run_path, coefficients, "random_sd")
+        )
+
+    return RPNBRunComparison(
+        metrics=pd.DataFrame(metric_rows),
+        random_parameter_means=pd.DataFrame(random_mean_rows),
+        random_parameter_sds=pd.DataFrame(random_sd_rows),
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="python -m rpnb.compare_runs")
+    parser.add_argument(
+        "--runs",
+        nargs="+",
+        required=True,
+        help="Completed RPNB run directories to compare.",
+    )
+    parser.add_argument(
+        "--out",
+        required=True,
+        help="Directory where comparison CSV, Excel, and HTML files will be written.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    report = compare_runs(args.runs)
+    paths = report.export(args.out)
+    print(f"Compared {len(args.runs)} RPNB runs.")
+    print(f"Metrics: {paths['metrics_csv']}")
+    print(f"Excel: {paths['excel']}")
+    print(f"HTML: {paths['html']}")
+    return 0
+
+
+def _read_single_row(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Required run output not found: {path}")
+    frame = pd.read_csv(path)
+    if frame.empty:
+        raise ValueError(f"Run output is empty: {path}")
+    return frame.iloc[0].to_dict()
+
+
+def _read_optional_single_row(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    frame = pd.read_csv(path)
+    return {} if frame.empty else frame.iloc[0].to_dict()
+
+
+def _read_coefficients(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"Required coefficient table not found: {path}")
+    return pd.read_csv(path)
+
+
+def _parameter_rows(
+    run_label: str,
+    run_path: Path,
+    coefficients: pd.DataFrame,
+    component: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    subset = coefficients.loc[coefficients["component"] == component]
+    for row in subset.to_dict(orient="records"):
+        rows.append(
+            {
+                "run": run_label,
+                "run_dir": str(run_path),
+                "parameter": row.get("parameter"),
+                "variable": row.get("variable"),
+                "estimate": row.get("estimate"),
+                "std_error": row.get("std_error"),
+                "z_value": row.get("z_value"),
+                "p_value": row.get("p_value"),
+            }
+        )
+    return rows
+
+
+def _alpha(fit_statistics: dict[str, Any], coefficients: pd.DataFrame) -> Any:
+    alpha = _get(fit_statistics, "alpha")
+    if alpha not in (None, "") and pd.notna(alpha):
+        return alpha
+    rows = coefficients.loc[coefficients["parameter"] == "alpha"]
+    return None if rows.empty else rows.iloc[0].get("estimate")
+
+
+def _get(mapping: dict[str, Any], key: str) -> Any:
+    value = mapping.get(key)
+    if pd.isna(value):
+        return None
+    return value
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

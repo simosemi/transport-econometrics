@@ -23,7 +23,8 @@ simulation:
 estimation:
   optimizer: bfgs
   multistart: 1
-  random_seed: 12345
+  multistart_seed: 12345
+  multistart_scale: 0.25
   maxiter: 300
   tolerance: 0.00001
   covariance: bfgs

@@ -24,7 +24,8 @@ def test_parse_model_spec_accepts_offset_and_random_parameters():
                 "start_alpha": 0.7,
                 "optimizer": "lbfgsb",
                 "multistart": 3,
-                "random_seed": 987,
+                "multistart_seed": 987,
+                "multistart_scale": 0.5,
             },
         }
     )
@@ -39,6 +40,7 @@ def test_parse_model_spec_accepts_offset_and_random_parameters():
     assert spec.optimizer == "lbfgsb"
     assert spec.multistart == 3
     assert spec.multistart_random_seed == 987
+    assert spec.multistart_scale == 0.5
 
 
 def test_parse_model_spec_requires_offset():
