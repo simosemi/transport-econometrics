@@ -32,6 +32,8 @@ Cholesky factor and report natural standard deviations and correlations.
   incidence rate ratios.
 - Predicted counts and expected crash frequencies.
 - Average marginal effects on expected crash counts.
+- Preprocessing summaries with numeric statistics, categorical frequencies,
+  reference categories, and generated dummy variables.
 - CSV, Excel, and HTML exports.
 - HPCC SLURM scripts.
 - Simulated-data tests and fixed-only validation against statsmodels.
@@ -112,6 +114,17 @@ reference category is dropped, and dummy coefficient names use
 `fixed: [x1, x2]` and `random: {z1: {...}}` remains supported for continuous
 variables.
 
+With `missing: drop`, RPNB drops rows with NaN/null values, blank strings, or
+non-finite numeric values in any required model column. The exported fit
+statistics include original rows, rows removed, final estimation sample size,
+and the exact checked columns.
+
+Before estimation, RPNB also writes a preprocessing summary for the cleaned
+estimation sample. The summary counts missing values from the raw model columns,
+reports mean, standard deviation, minimum, maximum, and unique values, and
+includes categorical frequency tables with each reference category and generated
+dummy variable list.
+
 ## Command Line Use
 
 ```powershell
@@ -143,6 +156,9 @@ Each run creates a timestamped directory containing:
 - `fit_statistics.csv`
 - `convergence.csv`
 - `timing.csv`
+- `preprocessing_summary.csv`
+- `preprocessing_summary.xlsx`
+- `preprocessing_summary.html`
 - `predictions.csv`
 - `marginal_effects.csv`
 - `rpnb_results.xlsx`

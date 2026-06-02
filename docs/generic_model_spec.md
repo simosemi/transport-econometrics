@@ -83,6 +83,58 @@ model:
   are generated.
 - Raw CSV files are read only and are never modified.
 
+## RPNB Missing Data Handling
+
+For RPNB, missing-data checks are applied to every column required for
+estimation:
+
+- dependent count variable
+- offset variable
+- fixed continuous variables
+- fixed categorical variables
+- random continuous variables
+- group ID, when declared
+
+With `missing: drop`, RPNB removes rows with any of the following in those
+columns:
+
+- `NaN` / null values
+- blank strings, including whitespace-only strings
+- non-finite numeric values such as `inf` and `-inf`
+- values in numeric model columns that cannot be converted to numbers
+
+With any other `missing` value, RPNB raises an error instead of dropping rows.
+The fit report exports sample accounting fields:
+
+- `missing_checked_columns`
+- `n_rows_original`
+- `n_rows_removed_missing`
+- `n_rows_final_estimation_sample`
+- `n_observations`
+
+## RPNB Preprocessing Summary
+
+Before likelihood optimization, RPNB builds a preprocessing summary from the
+declared model columns. Numeric statistics and categorical frequency tables use
+the final estimation sample after missing-row handling. The `number_missing`
+field counts invalid values in the raw input columns before rows are dropped.
+
+The exported files are:
+
+- `preprocessing_summary.csv`
+- `preprocessing_summary.xlsx`
+- `preprocessing_summary.html`
+
+The summary includes:
+
+- variable name and model role
+- mean, standard deviation, minimum, and maximum for numeric model variables
+- number of missing or invalid raw values
+- number of unique values in the estimation sample
+- categorical frequency tables
+- fixed categorical reference categories
+- generated dummy variable names, such as `Hour_1` and `Year_2018`
+
 Backward-compatible shorthand remains available for continuous-only models:
 
 ```yaml

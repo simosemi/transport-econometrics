@@ -144,6 +144,103 @@ def test_generic_categorical_reference_must_exist():
         model.fit(data, save_run=False)
 
 
+def test_missing_drop_removes_nan_blank_and_infinite_values_and_reports_sample(tmp_path):
+    data = pd.DataFrame(
+        {
+            "crashes": [0, 1, 2, 1, 0, 3, 1, 2],
+            "log_exposure": [0.0, 0.1, "", 0.2, 0.3, 0.4, 0.2, 0.1],
+            "x": [0.2, 0.4, 0.1, np.nan, 0.3, np.inf, -0.1, 0.0],
+            "Hour": [0, 1, 2, 0, 1, 2, 0, 1],
+            "group": [1, 1, 2, 2, 3, 3, 4, 4],
+        }
+    )
+    model = RandomParametersNegativeBinomial(
+        dependent="crashes",
+        offset="log_exposure",
+        fixed=["x"],
+        fixed_categorical=[{"Hour": {"reference": 0}}],
+        group_id="group",
+        random=[],
+        maxiter=1,
+        checkpoint_interval=0,
+        missing="drop",
+    )
+
+    results = model.fit(data, save_run=True, output_dir=tmp_path, export=True)
+    stats = results.fit_statistics
+
+    assert stats["missing_checked_columns"] == "crashes,log_exposure,x,Hour,group"
+    assert stats["n_rows_original"] == 8
+    assert stats["n_rows_removed_missing"] == 3
+    assert stats["n_rows_final_estimation_sample"] == 5
+    assert stats["n_observations"] == 5
+    assert set(results.predictions["row_index"]) == {0, 1, 4, 6, 7}
+
+    summary = results.preprocessing_summary
+    assert summary is not None
+    x_summary = summary.loc[
+        (summary["section"] == "variable_summary")
+        & (summary["variable_name"] == "x")
+    ].iloc[0]
+    assert x_summary["number_missing"] == 2
+    assert x_summary["number_unique_values"] == 5
+    assert x_summary["mean"] == pytest.approx(np.mean([0.2, 0.4, 0.3, -0.1, 0.0]))
+    assert x_summary["minimum"] == pytest.approx(-0.1)
+    assert x_summary["maximum"] == pytest.approx(0.4)
+
+    hour_summary = summary.loc[
+        (summary["section"] == "variable_summary")
+        & (summary["variable_name"] == "Hour")
+    ].iloc[0]
+    assert hour_summary["number_missing"] == 0
+    assert hour_summary["number_unique_values"] == 2
+    assert hour_summary["reference_category"] == "0"
+    assert hour_summary["generated_dummy_variables"] == "Hour_1"
+
+    hour_frequency = summary.loc[
+        (summary["section"] == "categorical_frequency")
+        & (summary["variable_name"] == "Hour")
+    ]
+    hour_counts = {
+        str(row.category_value): int(row.category_count)
+        for row in hour_frequency.itertuples()
+    }
+    assert hour_counts == {"0": 2, "1": 3}
+
+    exported = pd.read_csv(results.run_dir / "fit_statistics.csv")
+    assert exported.loc[0, "n_rows_original"] == 8
+    assert exported.loc[0, "n_rows_removed_missing"] == 3
+    assert exported.loc[0, "n_rows_final_estimation_sample"] == 5
+
+    assert (results.run_dir / "preprocessing_summary.csv").exists()
+    assert (results.run_dir / "preprocessing_summary.xlsx").exists()
+    assert (results.run_dir / "preprocessing_summary.html").exists()
+    exported_summary = pd.read_csv(results.run_dir / "preprocessing_summary.csv")
+    assert "standard_deviation" in exported_summary.columns
+    assert "generated_dummy_variables" in exported_summary.columns
+
+
+def test_missing_error_raises_for_nan_blank_and_infinite_values():
+    data = pd.DataFrame(
+        {
+            "crashes": [0, 1, 2],
+            "log_exposure": [0.0, "", 0.2],
+            "x": [0.2, np.inf, 0.1],
+        }
+    )
+    model = RandomParametersNegativeBinomial(
+        dependent="crashes",
+        offset="log_exposure",
+        fixed=["x"],
+        random=[],
+        maxiter=1,
+        missing="error",
+    )
+
+    with pytest.raises(ValueError, match="missing or non-finite"):
+        model.fit(data, save_run=False)
+
+
 def _generic_fake_count_data(n: int = 72) -> pd.DataFrame:
     rng = np.random.default_rng(202606)
     speed_mean = rng.normal(55.0, 5.0, size=n)

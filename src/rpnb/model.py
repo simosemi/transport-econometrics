@@ -41,6 +41,14 @@ class ParameterState:
     cholesky: np.ndarray | None = None
 
 
+@dataclass(frozen=True)
+class MissingDataReport:
+    checked_columns: tuple[str, ...]
+    original_rows: int
+    rows_removed: int
+    final_rows: int
+
+
 class RandomParametersNegativeBinomial:
     """Estimate NB2 count models with normally distributed random parameters."""
 
@@ -185,7 +193,8 @@ class RandomParametersNegativeBinomial:
 
         prepare_start = time.perf_counter()
         frame = _load_dataframe(data)
-        work = self._prepare_frame(frame, logger)
+        work, missing_report = self._prepare_frame(frame, logger)
+        preprocessing_summary = self._preprocessing_summary(frame, work)
         y = _count_array(work[self.dependent])
         offset = work[self.offset].astype(float).to_numpy()
         x_fixed, fixed_names = self._fixed_design(work)
@@ -404,6 +413,11 @@ class RandomParametersNegativeBinomial:
         fit_statistics = {
             "dependent": self.dependent,
             "offset": self.offset,
+            "missing_policy": self.missing,
+            "missing_checked_columns": ",".join(missing_report.checked_columns),
+            "n_rows_original": int(missing_report.original_rows),
+            "n_rows_removed_missing": int(missing_report.rows_removed),
+            "n_rows_final_estimation_sample": int(missing_report.final_rows),
             "n_observations": int(len(work)),
             "n_groups": int(n_groups),
             "n_parameters": int(n_params),
@@ -440,6 +454,7 @@ class RandomParametersNegativeBinomial:
             parameter_table=parameter_table,
             fit_statistics=fit_statistics,
             convergence=convergence,
+            preprocessing_summary=preprocessing_summary,
             predictions=predictions,
             marginal_effects=effects,
             run_dir=run_dir,
@@ -491,7 +506,7 @@ class RandomParametersNegativeBinomial:
             "output": {"directory": self.output_dir},
         }
 
-    def _prepare_frame(self, frame: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
+    def _model_columns(self) -> tuple[str, ...]:
         columns = [
             self.dependent,
             self.offset,
@@ -501,23 +516,109 @@ class RandomParametersNegativeBinomial:
         ]
         if self.group_id is not None:
             columns.append(self.group_id)
-        columns = list(dict.fromkeys(columns))
+        return tuple(dict.fromkeys(columns))
+
+    def _column_roles(self) -> dict[str, str]:
+        roles = {
+            self.dependent: "dependent",
+            self.offset: "offset",
+        }
+        roles.update({column: "fixed_continuous" for column in self.fixed})
+        roles.update({column: "fixed_categorical" for column in self.fixed_categorical})
+        roles.update({column: "random_continuous" for column in self.random})
+        if self.group_id is not None:
+            roles[self.group_id] = "group_id"
+        return roles
+
+    def _preprocessing_summary(
+        self, raw_frame: pd.DataFrame, work: pd.DataFrame
+    ) -> pd.DataFrame:
+        rows: list[dict[str, Any]] = []
+        roles = self._column_roles()
+        categorical_specs = {spec.name: spec for spec in self.fixed_categorical_specs}
+        numeric_roles = {
+            "dependent",
+            "offset",
+            "fixed_continuous",
+            "random_continuous",
+        }
+
+        for column in self._model_columns():
+            role = roles[column]
+            numeric_expected = role in numeric_roles
+            raw_series = raw_frame[column]
+            work_series = work[column]
+            missing_count = int(_invalid_column_mask(raw_series, numeric_expected).sum())
+            reference = ""
+            dummy_names: list[str] = []
+
+            if column in categorical_specs:
+                spec = categorical_specs[column]
+                reference = _format_report_value(spec.reference)
+                dummy_names = _dummy_names_from_series(
+                    work_series,
+                    spec.name,
+                    spec.reference,
+                )
+
+            row = _variable_summary_row(
+                column=column,
+                role=role,
+                series=work_series,
+                numeric_expected=numeric_expected,
+                missing_count=missing_count,
+                reference=reference,
+                dummy_names=dummy_names,
+            )
+            rows.append(row)
+
+            if column in categorical_specs:
+                spec = categorical_specs[column]
+                rows.extend(
+                    _categorical_frequency_rows(
+                        series=work_series,
+                        variable=column,
+                        role=role,
+                        reference=spec.reference,
+                        dummy_names=dummy_names,
+                        missing_count=missing_count,
+                    )
+                )
+
+        return pd.DataFrame(rows, columns=_PREPROCESSING_SUMMARY_COLUMNS)
+
+    def _prepare_frame(
+        self, frame: pd.DataFrame, logger: logging.Logger
+    ) -> tuple[pd.DataFrame, MissingDataReport]:
+        columns = list(self._model_columns())
         missing_columns = [column for column in columns if column not in frame.columns]
         if missing_columns:
             raise ValueError(f"Data are missing required columns: {missing_columns}")
 
         work = frame.loc[:, columns].copy()
-        missing_count = int(work.isna().any(axis=1).sum())
-        if missing_count:
+        invalid_mask = _invalid_model_data_mask(
+            work,
+            columns,
+            numeric_columns=[self.dependent, self.offset, *self.fixed, *self.random],
+        )
+        invalid_count = int(invalid_mask.sum())
+        if invalid_count:
             if self.missing == "drop":
-                work = work.dropna(axis=0)
-                logger.info("Dropped %s rows with missing model data.", missing_count)
+                work = work.loc[~invalid_mask].copy()
+                logger.info("Dropped %s rows with missing or non-finite model data.", invalid_count)
             else:
                 raise ValueError(
-                    f"Found {missing_count} rows with missing model data and missing!='drop'."
+                    f"Found {invalid_count} rows with missing or non-finite model data "
+                    "and missing!='drop'."
                 )
         if len(work) == 0:
             raise ValueError("No usable observations remain after missing-data handling.")
+        report = MissingDataReport(
+            checked_columns=tuple(columns),
+            original_rows=int(len(frame)),
+            rows_removed=invalid_count,
+            final_rows=int(len(work)),
+        )
 
         _validate_count_series(work[self.dependent])
         numeric_columns = [self.offset, *self.fixed, *self.random]
@@ -533,7 +634,7 @@ class RandomParametersNegativeBinomial:
                 raise ValueError(
                     f"Reference category {spec.reference!r} was not found in {spec.name!r}."
                 )
-        return work
+        return work, report
 
     def _fixed_design(self, work: pd.DataFrame) -> tuple[np.ndarray, tuple[str, ...]]:
         pieces: list[np.ndarray] = []
@@ -719,6 +820,142 @@ class RandomParametersNegativeBinomial:
 RPNBModel = RandomParametersNegativeBinomial
 
 
+_PREPROCESSING_SUMMARY_COLUMNS = [
+    "variable_name",
+    "role",
+    "section",
+    "mean",
+    "standard_deviation",
+    "minimum",
+    "maximum",
+    "number_missing",
+    "number_unique_values",
+    "reference_category",
+    "generated_dummy_variables",
+    "category_value",
+    "category_count",
+    "category_percent",
+]
+
+
+def _variable_summary_row(
+    column: str,
+    role: str,
+    series: pd.Series,
+    numeric_expected: bool,
+    missing_count: int,
+    reference: str,
+    dummy_names: Sequence[str],
+) -> dict[str, Any]:
+    mean, std, minimum, maximum = _numeric_summary(series) if numeric_expected else (
+        np.nan,
+        np.nan,
+        np.nan,
+        np.nan,
+    )
+    return {
+        "variable_name": column,
+        "role": role,
+        "section": "variable_summary",
+        "mean": mean,
+        "standard_deviation": std,
+        "minimum": minimum,
+        "maximum": maximum,
+        "number_missing": int(missing_count),
+        "number_unique_values": _number_unique_values(series, numeric_expected),
+        "reference_category": reference,
+        "generated_dummy_variables": ";".join(dummy_names),
+        "category_value": "",
+        "category_count": np.nan,
+        "category_percent": np.nan,
+    }
+
+
+def _categorical_frequency_rows(
+    series: pd.Series,
+    variable: str,
+    role: str,
+    reference: Any,
+    dummy_names: Sequence[str],
+    missing_count: int,
+) -> list[dict[str, Any]]:
+    valid = _nonmissing_series(series, numeric_expected=False)
+    categories = _ordered_categories(valid)
+    total = len(valid)
+    rows: list[dict[str, Any]] = []
+    for category in categories:
+        count = int(
+            valid.map(lambda value, target=category: _values_equal(value, target)).sum()
+        )
+        rows.append(
+            {
+                "variable_name": variable,
+                "role": role,
+                "section": "categorical_frequency",
+                "mean": np.nan,
+                "standard_deviation": np.nan,
+                "minimum": np.nan,
+                "maximum": np.nan,
+                "number_missing": int(missing_count),
+                "number_unique_values": len(categories),
+                "reference_category": _format_report_value(reference),
+                "generated_dummy_variables": ";".join(dummy_names),
+                "category_value": _format_report_value(category),
+                "category_count": count,
+                "category_percent": count / total if total else np.nan,
+            }
+        )
+    return rows
+
+
+def _dummy_names_from_series(
+    series: pd.Series, variable: str, reference: Any
+) -> list[str]:
+    valid = _nonmissing_series(series, numeric_expected=False)
+    categories = _ordered_categories(valid)
+    return [
+        f"{variable}_{_format_category_value(category)}"
+        for category in categories
+        if not _values_equal(category, reference)
+    ]
+
+
+def _numeric_summary(series: pd.Series) -> tuple[float, float, float, float]:
+    values = _finite_numeric_values(series)
+    if values.size == 0:
+        return np.nan, np.nan, np.nan, np.nan
+    std = float(np.std(values, ddof=1)) if values.size > 1 else np.nan
+    return (
+        float(np.mean(values)),
+        std,
+        float(np.min(values)),
+        float(np.max(values)),
+    )
+
+
+def _number_unique_values(series: pd.Series, numeric_expected: bool) -> int:
+    if numeric_expected:
+        return int(pd.Series(_finite_numeric_values(series)).nunique(dropna=True))
+    valid = _nonmissing_series(series, numeric_expected=False)
+    return int(valid.nunique(dropna=True))
+
+
+def _finite_numeric_values(series: pd.Series) -> np.ndarray:
+    numeric = pd.to_numeric(series, errors="coerce")
+    values = numeric.to_numpy(dtype=float)
+    return values[np.isfinite(values)]
+
+
+def _nonmissing_series(series: pd.Series, numeric_expected: bool) -> pd.Series:
+    return series.loc[~_invalid_column_mask(series, numeric_expected)]
+
+
+def _format_report_value(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def _coerce_random_specs(
     random: Iterable[str | RandomParameterSpec],
 ) -> list[RandomParameterSpec]:
@@ -852,6 +1089,45 @@ def _matrix(work: pd.DataFrame, columns: Sequence[str]) -> np.ndarray:
     if not columns:
         return np.zeros((len(work), 0), dtype=float)
     return work.loc[:, columns].astype(float).to_numpy()
+
+
+def _invalid_model_data_mask(
+    work: pd.DataFrame,
+    columns: Sequence[str],
+    numeric_columns: Sequence[str],
+) -> pd.Series:
+    invalid = pd.Series(False, index=work.index)
+    numeric_column_set = set(numeric_columns)
+    for column in columns:
+        invalid = invalid | _invalid_column_mask(
+            work[column],
+            numeric_expected=column in numeric_column_set,
+        )
+
+    return invalid
+
+
+def _invalid_column_mask(series: pd.Series, numeric_expected: bool) -> pd.Series:
+    invalid = series.isna()
+    invalid = invalid | series.map(
+        lambda value: isinstance(value, str) and value.strip() == ""
+    )
+    invalid = invalid | series.map(_is_infinite_scalar)
+    if numeric_expected:
+        numeric = pd.to_numeric(series, errors="coerce")
+        non_finite = pd.Series(
+            ~np.isfinite(numeric.to_numpy(dtype=float)),
+            index=series.index,
+        )
+        invalid = invalid | numeric.isna() | non_finite
+    return invalid
+
+
+def _is_infinite_scalar(value: Any) -> bool:
+    try:
+        return bool(np.isinf(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _validate_count_series(series: pd.Series) -> None:

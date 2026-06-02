@@ -18,6 +18,7 @@ class RPNBResults:
     parameter_table: pd.DataFrame
     fit_statistics: dict[str, Any]
     convergence: dict[str, Any]
+    preprocessing_summary: pd.DataFrame | None = None
     predictions: pd.DataFrame | None = None
     marginal_effects: pd.DataFrame | None = None
     run_dir: Path | None = None
@@ -73,10 +74,28 @@ class RPNBResults:
             "excel": directory / "rpnb_results.xlsx",
             "html": directory / "rpnb_results.html",
         }
+        if self.preprocessing_summary is not None:
+            paths["preprocessing_summary_csv"] = directory / "preprocessing_summary.csv"
+            paths["preprocessing_summary_xlsx"] = directory / "preprocessing_summary.xlsx"
+            paths["preprocessing_summary_html"] = directory / "preprocessing_summary.html"
+
         self.parameter_table.to_csv(paths["coefficients_csv"], index=False)
         pd.DataFrame([self.fit_statistics]).to_csv(paths["fit_statistics_csv"], index=False)
         pd.DataFrame([self.convergence]).to_csv(paths["convergence_csv"], index=False)
         pd.DataFrame([self.timing]).to_csv(paths["timing_csv"], index=False)
+        if self.preprocessing_summary is not None:
+            self.preprocessing_summary.to_csv(
+                paths["preprocessing_summary_csv"], index=False
+            )
+            with pd.ExcelWriter(
+                paths["preprocessing_summary_xlsx"], engine="openpyxl"
+            ) as writer:
+                self.preprocessing_summary.to_excel(
+                    writer, sheet_name="preprocessing_summary", index=False
+                )
+            paths["preprocessing_summary_html"].write_text(
+                self._preprocessing_to_html(), encoding="utf-8"
+            )
 
         if self.predictions is not None:
             paths["predictions_csv"] = directory / "predictions.csv"
@@ -94,6 +113,10 @@ class RPNBResults:
                 writer, sheet_name="convergence", index=False
             )
             pd.DataFrame([self.timing]).to_excel(writer, sheet_name="timing", index=False)
+            if self.preprocessing_summary is not None:
+                self.preprocessing_summary.to_excel(
+                    writer, sheet_name="preprocessing_summary", index=False
+                )
             if self.predictions is not None:
                 self.predictions.to_excel(writer, sheet_name="predictions", index=False)
             if self.marginal_effects is not None:
@@ -116,6 +139,13 @@ class RPNBResults:
             "<h2>Coefficient table</h2>",
             self.parameter_table.to_html(index=False),
         ]
+        if self.preprocessing_summary is not None:
+            sections.extend(
+                [
+                    "<h2>Preprocessing summary</h2>",
+                    self.preprocessing_summary.to_html(index=False),
+                ]
+            )
         if self.marginal_effects is not None:
             sections.extend(
                 ["<h2>Average marginal effects</h2>", self.marginal_effects.to_html(index=False)]
@@ -136,6 +166,26 @@ class RPNBResults:
                 "padding:0.35rem 0.5rem;}th{background:#f5f5f5;}</style>",
                 "</head><body>",
                 *sections,
+                "</body></html>",
+            ]
+        )
+
+    def _preprocessing_to_html(self) -> str:
+        table = (
+            self.preprocessing_summary.to_html(index=False)
+            if self.preprocessing_summary is not None
+            else "<p>No preprocessing summary was generated.</p>"
+        )
+        return "\n".join(
+            [
+                "<!doctype html>",
+                "<html><head><meta charset=\"utf-8\"><title>RPNB preprocessing summary</title>",
+                "<style>body{font-family:Arial,sans-serif;max-width:1200px;margin:2rem auto;}"
+                "table{border-collapse:collapse;margin-bottom:2rem;}td,th{border:1px solid #ddd;"
+                "padding:0.35rem 0.5rem;}th{background:#f5f5f5;}</style>",
+                "</head><body>",
+                "<h1>RPNB preprocessing summary</h1>",
+                table,
                 "</body></html>",
             ]
         )
