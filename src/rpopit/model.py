@@ -23,6 +23,7 @@ from rpopit.checkpoint import (
 from rpopit.config import (
     CategoricalVariableSpec,
     ModelSpec,
+    RandomCategoricalVariableSpec,
     RandomParameterSpec,
     load_model_spec,
 )
@@ -57,7 +58,10 @@ class RandomParametersOrderedProbit:
         dependent: str,
         fixed: Sequence[str] | None = None,
         fixed_categorical: Sequence[CategoricalVariableSpec | dict[str, Any]] | None = None,
-        random: Sequence[str | RandomParameterSpec] | None = None,
+        random: Sequence[str | RandomParameterSpec | dict[str, Any]] | None = None,
+        random_categorical: Sequence[
+            RandomCategoricalVariableSpec | dict[str, Any]
+        ] | None = None,
         group_id: str | None = None,
         categories: Sequence[Any] | None = None,
         draws: int = 200,
@@ -82,7 +86,13 @@ class RandomParametersOrderedProbit:
             _coerce_categorical_specs(fixed_categorical or ())
         )
         self.fixed_categorical = tuple(item.name for item in self.fixed_categorical_specs)
-        self.random_specs = tuple(_coerce_random_specs(random or ()))
+        self.random_continuous_specs = tuple(_coerce_random_specs(random or ()))
+        self.random_continuous = tuple(item.name for item in self.random_continuous_specs)
+        self.random_categorical_specs = tuple(
+            _coerce_random_categorical_specs(random_categorical or ())
+        )
+        self.random_categorical = tuple(item.name for item in self.random_categorical_specs)
+        self.random_specs = self.random_continuous_specs
         self.random = tuple(item.name for item in self.random_specs)
         self.group_id = group_id
         self.categories = None if categories is None else tuple(categories)
@@ -114,17 +124,14 @@ class RandomParametersOrderedProbit:
             raise ValueError("workers must be at least 1.")
         if self.checkpoint_interval < 0:
             raise ValueError("checkpoint_interval must be non-negative.")
-        duplicates = _duplicates(
-            (
-                self.dependent,
-                *self.fixed,
-                *self.fixed_categorical,
-                *self.random,
-                *(() if self.group_id is None else (self.group_id,)),
-            )
+        _validate_ordered_model_roles(
+            dependent=self.dependent,
+            fixed_names=self.fixed,
+            fixed_categorical_names=self.fixed_categorical,
+            random_names=self.random_continuous,
+            random_categorical_names=self.random_categorical,
+            group_id=self.group_id,
         )
-        if duplicates:
-            raise ValueError(f"Variables may not appear in multiple roles: {duplicates}")
 
     @classmethod
     def from_spec(cls, spec: ModelSpec) -> "RandomParametersOrderedProbit":
@@ -133,6 +140,7 @@ class RandomParametersOrderedProbit:
             fixed=spec.fixed,
             fixed_categorical=spec.fixed_categorical,
             random=spec.random,
+            random_categorical=spec.random_categorical,
             group_id=spec.group_id,
             categories=spec.categories,
             draws=spec.draws,
@@ -192,8 +200,10 @@ class RandomParametersOrderedProbit:
         work = self._prepare_frame(frame, logger)
         y_codes, categories = self._encode_dependent(work[self.dependent])
         x_fixed, fixed_names = self._fixed_design(work)
-        x_random = _matrix(work, self.random)
-        q = len(self.random)
+        x_random, random_names, random_specs = self._random_design(work)
+        self.random = random_names
+        self.random_specs = random_specs
+        q = len(random_names)
         group_codes, group_labels, group_indices, order, group_starts, group_counts = (
             self._group_indices(work, q > 0)
         )
@@ -532,14 +542,10 @@ class RandomParametersOrderedProbit:
                     self.fixed,
                     self.fixed_categorical_specs,
                 ),
-                "random": {
-                    item.name: {
-                        "distribution": item.distribution,
-                        "start_mean": item.start_mean,
-                        "start_sd": item.start_sd,
-                    }
-                    for item in self.random_specs
-                },
+                "random": _random_spec_for_output(
+                    self.random_continuous_specs,
+                    self.random_categorical_specs,
+                ),
                 "group_id": self.group_id,
                 "categories": None if self.categories is None else list(self.categories),
                 "correlated_random_parameters": self.correlated_random_parameters,
@@ -569,7 +575,8 @@ class RandomParametersOrderedProbit:
             self.dependent,
             *self.fixed,
             *self.fixed_categorical,
-            *self.random,
+            *self.random_continuous,
+            *self.random_categorical,
         ]
         if self.group_id is not None:
             columns.append(self.group_id)
@@ -590,7 +597,7 @@ class RandomParametersOrderedProbit:
                 )
         if len(work) == 0:
             raise ValueError("No usable observations remain after missing-data handling.")
-        numeric_columns = [*self.fixed, *self.random]
+        numeric_columns = [*self.fixed, *self.random_continuous]
         for column in numeric_columns:
             values = pd.to_numeric(work[column], errors="coerce")
             if values.isna().any():
@@ -599,6 +606,11 @@ class RandomParametersOrderedProbit:
                 raise ValueError(f"Column {column!r} contains non-finite values.")
             work[column] = values
         for spec in self.fixed_categorical_specs:
+            if not _series_contains_value(work[spec.name], spec.reference):
+                raise ValueError(
+                    f"Reference category {spec.reference!r} was not found in {spec.name!r}."
+                )
+        for spec in self.random_categorical_specs:
             if not _series_contains_value(work[spec.name], spec.reference):
                 raise ValueError(
                     f"Reference category {spec.reference!r} was not found in {spec.name!r}."
@@ -619,10 +631,42 @@ class RandomParametersOrderedProbit:
             )
             if dummy_table.size:
                 pieces.append(dummy_table)
-                names.extend(dummy_names)
+            names.extend(dummy_names)
         if not pieces:
             return np.zeros((len(work), 0), dtype=float), ()
         return np.column_stack(pieces), tuple(names)
+
+    def _random_design(
+        self, work: pd.DataFrame
+    ) -> tuple[np.ndarray, tuple[str, ...], tuple[RandomParameterSpec, ...]]:
+        pieces: list[np.ndarray] = []
+        names: list[str] = []
+        specs: list[RandomParameterSpec] = []
+        if self.random_continuous:
+            pieces.append(_matrix(work, self.random_continuous))
+            names.extend(self.random_continuous)
+            specs.extend(self.random_continuous_specs)
+        for spec in self.random_categorical_specs:
+            dummy_table, dummy_names = _dummy_code_categorical(
+                work[spec.name],
+                spec.name,
+                spec.reference,
+            )
+            if dummy_table.size:
+                pieces.append(dummy_table)
+                names.extend(dummy_names)
+                specs.extend(
+                    RandomParameterSpec(
+                        name=dummy_name,
+                        distribution=spec.distribution,
+                        start_mean=spec.start_mean,
+                        start_sd=spec.start_sd,
+                    )
+                    for dummy_name in dummy_names
+                )
+        if not pieces:
+            return np.zeros((len(work), 0), dtype=float), (), ()
+        return np.column_stack(pieces), tuple(names), tuple(specs)
 
     def _encode_dependent(self, series: pd.Series) -> tuple[np.ndarray, tuple[Any, ...]]:
         if self.categories is None:
@@ -893,14 +937,84 @@ def _sum_optional_ints(values: Iterable[int | None]) -> int:
 
 
 def _coerce_random_specs(
-    random: Iterable[str | RandomParameterSpec],
+    random: Iterable[str | RandomParameterSpec | dict[str, Any]],
 ) -> list[RandomParameterSpec]:
     specs: list[RandomParameterSpec] = []
     for item in random:
         if isinstance(item, RandomParameterSpec):
             specs.append(item)
+        elif isinstance(item, dict):
+            if "name" in item:
+                name = item["name"]
+                config = {key: value for key, value in item.items() if key != "name"}
+            elif len(item) == 1:
+                name, config = next(iter(item.items()))
+            else:
+                raise ValueError(
+                    "Random parameter specs must include name or one variable mapping."
+                )
+            if isinstance(config, str):
+                config = {"distribution": config}
+            elif config is None:
+                config = {}
+            elif not isinstance(config, dict):
+                raise ValueError(f"Invalid random parameter specification for {name!r}.")
+            specs.append(
+                RandomParameterSpec(
+                    name=str(name),
+                    distribution=str(config.get("distribution", config.get("dist", "normal"))),
+                    start_mean=float(config.get("start_mean", config.get("mean", 0.0))),
+                    start_sd=float(config.get("start_sd", config.get("sd", 0.3))),
+                )
+            )
         else:
             specs.append(RandomParameterSpec(name=str(item)))
+    return specs
+
+
+def _coerce_random_categorical_specs(
+    categorical: Iterable[RandomCategoricalVariableSpec | dict[str, Any]],
+) -> list[RandomCategoricalVariableSpec]:
+    specs: list[RandomCategoricalVariableSpec] = []
+    for item in categorical:
+        if isinstance(item, RandomCategoricalVariableSpec):
+            specs.append(item)
+        elif isinstance(item, dict):
+            if "name" in item and "reference" in item:
+                specs.append(
+                    RandomCategoricalVariableSpec(
+                        name=str(item["name"]),
+                        reference=item["reference"],
+                        distribution=str(item.get("distribution", item.get("dist", "normal"))),
+                        start_mean=float(item.get("start_mean", item.get("mean", 0.0))),
+                        start_sd=float(item.get("start_sd", item.get("sd", 0.3))),
+                    )
+                )
+            elif len(item) == 1:
+                name, config = next(iter(item.items()))
+                if not isinstance(config, dict):
+                    config = {"reference": config}
+                if "reference" not in config:
+                    raise ValueError(
+                        f"Random categorical variable {name!r} requires a reference value."
+                    )
+                specs.append(
+                    RandomCategoricalVariableSpec(
+                        name=str(name),
+                        reference=config["reference"],
+                        distribution=str(config.get("distribution", config.get("dist", "normal"))),
+                        start_mean=float(config.get("start_mean", config.get("mean", 0.0))),
+                        start_sd=float(config.get("start_sd", config.get("sd", 0.3))),
+                    )
+                )
+            else:
+                raise ValueError(
+                    "Random categorical specs must include name/reference or one variable mapping."
+                )
+        else:
+            raise ValueError(
+                "Random categorical specs must be RandomCategoricalVariableSpec or dict."
+            )
     return specs
 
 
@@ -1015,6 +1129,69 @@ def _fixed_spec_for_output(
             for item in categorical
         },
     }
+
+
+def _random_spec_for_output(
+    continuous: Sequence[RandomParameterSpec],
+    categorical: Sequence[RandomCategoricalVariableSpec],
+) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    if continuous:
+        output["continuous"] = {
+            item.name: {
+                "distribution": item.distribution,
+                "start_mean": item.start_mean,
+                "start_sd": item.start_sd,
+            }
+            for item in continuous
+        }
+    if categorical:
+        output["categorical"] = {
+            item.name: {
+                "reference": item.reference,
+                "distribution": item.distribution,
+                "start_mean": item.start_mean,
+                "start_sd": item.start_sd,
+            }
+            for item in categorical
+        }
+    return output
+
+
+def _validate_ordered_model_roles(
+    dependent: str,
+    fixed_names: tuple[str, ...],
+    fixed_categorical_names: tuple[str, ...],
+    random_names: tuple[str, ...],
+    random_categorical_names: tuple[str, ...],
+    group_id: str | None,
+) -> None:
+    for variable in fixed_names:
+        if variable in random_names:
+            raise ValueError(
+                f"Variable {variable} is already modeled as a random parameter. "
+                f"Its mean effect is estimated as beta_random_mean[{variable}]; "
+                "do not also list it as fixed."
+            )
+    for variable in fixed_categorical_names:
+        if variable in random_categorical_names:
+            raise ValueError(
+                f"Categorical variable {variable} is already modeled as a random parameter. "
+                f"Its generated dummy mean effects are estimated as beta_random_mean[{variable}_value]; "
+                "do not also list it as fixed."
+            )
+    duplicates = _duplicates(
+        (
+            dependent,
+            *fixed_names,
+            *fixed_categorical_names,
+            *random_names,
+            *random_categorical_names,
+            *(() if group_id is None else (group_id,)),
+        )
+    )
+    if duplicates:
+        raise ValueError(f"Variables may not appear in multiple roles: {duplicates}")
 
 
 def _duplicates(values: tuple[str, ...]) -> list[str]:

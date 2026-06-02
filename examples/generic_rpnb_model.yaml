@@ -1,0 +1,57 @@
+model:
+  dependent: crashes
+  offset: log_exposure
+
+  fixed:
+    continuous:
+      - speed_mean
+      - Log_Hourly_volume
+
+    categorical:
+      Hour:
+        reference: 0
+      Year:
+        reference: 2017
+
+  random:
+    continuous:
+      speed_std:
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+      RtPvdShldrWidth:
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+      Truck_percent:
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+
+    categorical:
+      Interstate:
+        reference: 1
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+
+  group_id: UniqueID
+  correlated_random_parameters: false
+  missing: drop
+
+simulation:
+  draws: 200
+  draw_type: halton
+  seed: 12345
+
+estimation:
+  optimizer: bfgs
+  multistart: 1
+  random_seed: 12345
+  maxiter: 1000
+  tolerance: 0.00001
+  checkpoint_interval: 10
+  start_alpha: 0.5
+
+output:
+  directory: runs

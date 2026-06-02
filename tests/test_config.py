@@ -50,6 +50,14 @@ def test_parse_generic_ordered_model_spec():
                             "start_mean": 0.0,
                             "start_sd": 0.3,
                         }
+                    },
+                    "categorical": {
+                        "Interstate": {
+                            "reference": 1,
+                            "distribution": "normal",
+                            "start_mean": 0.0,
+                            "start_sd": 0.2,
+                        }
                     }
                 },
                 "group_id": "UniqueID",
@@ -62,10 +70,12 @@ def test_parse_generic_ordered_model_spec():
     assert [item.name for item in spec.fixed_categorical] == ["Hour", "Year"]
     assert [item.reference for item in spec.fixed_categorical] == [0, 2017]
     assert spec.random[0].name == "speed_std"
+    assert [item.name for item in spec.random_categorical] == ["Interstate"]
+    assert spec.random_categorical[0].reference == 1
 
 
-def test_parse_generic_ordered_spec_rejects_duplicate_roles():
-    with pytest.raises(ValueError, match="multiple roles"):
+def test_parse_generic_ordered_spec_rejects_duplicate_fixed_random_continuous():
+    with pytest.raises(ValueError) as exc_info:
         parse_model_spec(
             {
                 "model": {
@@ -75,6 +85,29 @@ def test_parse_generic_ordered_spec_rejects_duplicate_roles():
                 }
             }
         )
+    assert str(exc_info.value) == (
+        "Variable speed_mean is already modeled as a random parameter. "
+        "Its mean effect is estimated as beta_random_mean[speed_mean]; "
+        "do not also list it as fixed."
+    )
+
+
+def test_parse_generic_ordered_spec_rejects_duplicate_fixed_random_categorical():
+    with pytest.raises(ValueError) as exc_info:
+        parse_model_spec(
+            {
+                "model": {
+                    "dependent": "severity",
+                    "fixed": {"categorical": {"Interstate": {"reference": 1}}},
+                    "random": {"categorical": {"Interstate": {"reference": 1}}},
+                }
+            }
+        )
+    assert str(exc_info.value) == (
+        "Categorical variable Interstate is already modeled as a random parameter. "
+        "Its generated dummy mean effects are estimated as "
+        "beta_random_mean[Interstate_value]; do not also list it as fixed."
+    )
 
 
 def test_ordered_generic_categorical_dummies_drop_reference_and_do_not_modify_raw_data():
@@ -88,6 +121,16 @@ def test_ordered_generic_categorical_dummies_drop_reference_and_do_not_modify_ra
             {"Year": {"reference": 2017}},
         ],
         random=["speed_std"],
+        random_categorical=[
+            {
+                "Interstate": {
+                    "reference": 1,
+                    "distribution": "normal",
+                    "start_mean": 0.0,
+                    "start_sd": 0.2,
+                }
+            }
+        ],
         group_id="UniqueID",
         categories=[0, 1, 2],
         draws=8,
@@ -104,6 +147,21 @@ def test_ordered_generic_categorical_dummies_drop_reference_and_do_not_modify_ra
     assert "beta_fixed[Hour_2]" in parameters
     assert "beta_fixed[Year_2018]" in parameters
     assert "beta_random_mean[speed_std]" in parameters
+    assert "beta_random_sd[speed_std]" in parameters
+    assert "beta_random_mean[Interstate_0]" in parameters
+    assert "beta_random_sd[Interstate_0]" in parameters
+    assert "beta_random_mean[Interstate_1]" not in parameters
+    interstate_mean = results.parameter_table.loc[
+        results.parameter_table["parameter"] == "beta_random_mean[Interstate_0]"
+    ].iloc[0]
+    interstate_sd = results.parameter_table.loc[
+        results.parameter_table["parameter"] == "beta_random_sd[Interstate_0]"
+    ].iloc[0]
+    assert interstate_mean["component"] == "random_mean"
+    assert "average/mean effect" in interstate_mean["interpretation"]
+    assert "relative to the declared reference category" in interstate_mean["interpretation"]
+    assert interstate_sd["component"] == "random_sd"
+    assert "heterogeneity/standard deviation" in interstate_sd["interpretation"]
     pd.testing.assert_frame_equal(data, original)
 
 
@@ -122,6 +180,41 @@ def test_ordered_generic_categorical_reference_must_exist():
         model.fit(data, save_run=False)
 
 
+def test_ordered_missing_drop_checks_random_only_variables():
+    data = _generic_fake_ordered_data(n=12)
+    data.loc[0, "speed_std"] = np.nan
+    data.loc[1, "Interstate"] = np.nan
+    model = RandomParametersOrderedProbit(
+        dependent="severity",
+        fixed=[],
+        random=[{"speed_std": {"start_mean": 0.0, "start_sd": 0.2}}],
+        random_categorical=[
+            {
+                "Interstate": {
+                    "reference": 1,
+                    "distribution": "normal",
+                    "start_mean": 0.0,
+                    "start_sd": 0.2,
+                }
+            }
+        ],
+        categories=[0, 1, 2],
+        draws=4,
+        maxiter=1,
+        checkpoint_interval=0,
+        missing="drop",
+    )
+
+    results = model.fit(data, save_run=False)
+
+    assert set(results.predicted_probabilities["row_index"]) == set(range(2, 12))
+    parameters = set(results.parameter_table["parameter"])
+    assert "beta_random_mean[speed_std]" in parameters
+    assert "beta_random_sd[speed_std]" in parameters
+    assert "beta_random_mean[Interstate_0]" in parameters
+    assert "beta_random_sd[Interstate_0]" in parameters
+
+
 def _generic_fake_ordered_data(n: int = 72) -> pd.DataFrame:
     rng = np.random.default_rng(202607)
     speed_mean = rng.normal(55.0, 5.0, size=n)
@@ -129,6 +222,7 @@ def _generic_fake_ordered_data(n: int = 72) -> pd.DataFrame:
     speed_std = rng.normal(6.0, 1.0, size=n)
     hour = np.resize(np.array([2, 0, 1]), n)
     year = np.resize(np.array([2018, 2017]), n)
+    interstate = np.resize(np.array([1, 0]), n)
     group = np.repeat(np.arange(n // 3), 3)
     latent = (
         0.015 * speed_mean
@@ -137,6 +231,7 @@ def _generic_fake_ordered_data(n: int = 72) -> pd.DataFrame:
         + 0.12 * (hour == 1)
         - 0.08 * (hour == 2)
         + 0.06 * (year == 2018)
+        - 0.05 * (interstate == 0)
         + rng.normal(size=n)
     )
     severity = np.digitize(latent, [-0.25, 0.9])
@@ -148,6 +243,7 @@ def _generic_fake_ordered_data(n: int = 72) -> pd.DataFrame:
             "speed_std": speed_std,
             "Hour": hour,
             "Year": year,
+            "Interstate": interstate,
             "UniqueID": group,
         }
     )

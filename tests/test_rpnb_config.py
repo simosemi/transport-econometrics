@@ -79,7 +79,15 @@ def test_parse_generic_model_spec_with_categorical_and_random_continuous():
                             "start_mean": 0.0,
                             "start_sd": 0.4,
                         },
-                    }
+                    },
+                    "categorical": {
+                        "Interstate": {
+                            "reference": 1,
+                            "distribution": "normal",
+                            "start_mean": 0.0,
+                            "start_sd": 0.2,
+                        }
+                    },
                 },
                 "group_id": "UniqueID",
             }
@@ -91,10 +99,13 @@ def test_parse_generic_model_spec_with_categorical_and_random_continuous():
     assert [item.reference for item in spec.fixed_categorical] == [0, 2017]
     assert [item.name for item in spec.random] == ["speed_std", "TruckPercent"]
     assert spec.random[1].start_sd == 0.4
+    assert [item.name for item in spec.random_categorical] == ["Interstate"]
+    assert spec.random_categorical[0].reference == 1
+    assert spec.random_categorical[0].start_sd == 0.2
 
 
-def test_parse_generic_spec_rejects_duplicate_roles():
-    with pytest.raises(ValueError, match="multiple roles"):
+def test_parse_generic_spec_rejects_duplicate_fixed_random_continuous():
+    with pytest.raises(ValueError) as exc_info:
         parse_model_spec(
             {
                 "model": {
@@ -105,6 +116,54 @@ def test_parse_generic_spec_rejects_duplicate_roles():
                 }
             }
         )
+    assert str(exc_info.value) == (
+        "Variable speed_mean is already modeled as a random parameter. "
+        "Its mean effect is estimated as beta_random_mean[speed_mean]; "
+        "do not also list it as fixed."
+    )
+
+
+def test_parse_generic_spec_rejects_duplicate_fixed_random_categorical():
+    with pytest.raises(ValueError) as exc_info:
+        parse_model_spec(
+            {
+                "model": {
+                    "dependent": "crashes",
+                    "offset": "log_exposure",
+                    "fixed": {"categorical": {"Interstate": {"reference": 1}}},
+                    "random": {"categorical": {"Interstate": {"reference": 1}}},
+                }
+            }
+        )
+    assert str(exc_info.value) == (
+        "Categorical variable Interstate is already modeled as a random parameter. "
+        "Its generated dummy mean effects are estimated as "
+        "beta_random_mean[Interstate_value]; do not also list it as fixed."
+    )
+
+
+@pytest.mark.parametrize(
+    "role_spec",
+    [
+        {"fixed": {"continuous": ["log_exposure"]}},
+        {"random": {"continuous": {"log_exposure": {"start_sd": 0.3}}}},
+        {"random": {"categorical": {"log_exposure": {"reference": 0}}}},
+    ],
+)
+def test_parse_generic_spec_rejects_offset_as_fixed_or_random(role_spec):
+    model = {
+        "dependent": "crashes",
+        "offset": "log_exposure",
+        **role_spec,
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        parse_model_spec({"model": model})
+
+    assert str(exc_info.value) == (
+        "Offset variable log_exposure has coefficient fixed at 1 and cannot be "
+        "listed as fixed or random."
+    )
 
 
 def test_generic_categorical_dummies_drop_reference_and_do_not_modify_raw_data():
@@ -119,6 +178,16 @@ def test_generic_categorical_dummies_drop_reference_and_do_not_modify_raw_data()
             {"Year": {"reference": 2017}},
         ],
         random=["speed_std"],
+        random_categorical=[
+            {
+                "Interstate": {
+                    "reference": 1,
+                    "distribution": "normal",
+                    "start_mean": 0.0,
+                    "start_sd": 0.2,
+                }
+            }
+        ],
         group_id="UniqueID",
         draws=8,
         maxiter=2,
@@ -134,6 +203,21 @@ def test_generic_categorical_dummies_drop_reference_and_do_not_modify_raw_data()
     assert "beta_fixed[Hour_2]" in parameters
     assert "beta_fixed[Year_2018]" in parameters
     assert "beta_random_mean[speed_std]" in parameters
+    assert "beta_random_sd[speed_std]" in parameters
+    assert "beta_random_mean[Interstate_0]" in parameters
+    assert "beta_random_sd[Interstate_0]" in parameters
+    assert "beta_random_mean[Interstate_1]" not in parameters
+    interstate_mean = results.parameter_table.loc[
+        results.parameter_table["parameter"] == "beta_random_mean[Interstate_0]"
+    ].iloc[0]
+    interstate_sd = results.parameter_table.loc[
+        results.parameter_table["parameter"] == "beta_random_sd[Interstate_0]"
+    ].iloc[0]
+    assert interstate_mean["component"] == "random_mean"
+    assert "average/mean effect" in interstate_mean["interpretation"]
+    assert "relative to the declared reference category" in interstate_mean["interpretation"]
+    assert interstate_sd["component"] == "random_sd"
+    assert "heterogeneity/standard deviation" in interstate_sd["interpretation"]
     pd.testing.assert_frame_equal(data, original)
 
 
@@ -150,6 +234,54 @@ def test_generic_categorical_reference_must_exist():
 
     with pytest.raises(ValueError, match="Reference category"):
         model.fit(data, save_run=False)
+
+
+def test_missing_drop_checks_random_only_continuous_and_categorical_variables():
+    data = pd.DataFrame(
+        {
+            "crashes": [0, 1, 2, 1, 0, 2],
+            "log_exposure": [0.0, 0.1, 0.2, 0.0, 0.3, 0.2],
+            "z": [0.2, np.nan, -0.1, 0.3, 0.0, 0.4],
+            "Interstate": [1, 0, "", 1, 0, 1],
+        }
+    )
+    model = RandomParametersNegativeBinomial(
+        dependent="crashes",
+        offset="log_exposure",
+        fixed=[],
+        random=[{"z": {"start_mean": 0.0, "start_sd": 0.2}}],
+        random_categorical=[
+            {
+                "Interstate": {
+                    "reference": 1,
+                    "distribution": "normal",
+                    "start_mean": 0.0,
+                    "start_sd": 0.2,
+                }
+            }
+        ],
+        draws=4,
+        maxiter=1,
+        checkpoint_interval=0,
+        missing="drop",
+    )
+
+    results = model.fit(data, save_run=False)
+
+    assert results.fit_statistics["missing_checked_columns"] == (
+        "crashes,log_exposure,z,Interstate"
+    )
+    assert results.fit_statistics["n_rows_removed_missing"] == 2
+    assert results.fit_statistics["n_rows_final_estimation_sample"] == 4
+    assert set(results.predictions["row_index"]) == {0, 3, 4, 5}
+    roles = dict(
+        results.preprocessing_summary.loc[
+            results.preprocessing_summary["section"] == "variable_summary",
+            ["variable_name", "role"],
+        ].to_numpy()
+    )
+    assert roles["z"] == "random_continuous"
+    assert roles["Interstate"] == "random_categorical"
 
 
 def test_missing_drop_removes_nan_blank_and_infinite_values_and_reports_sample(tmp_path):
@@ -256,6 +388,7 @@ def _generic_fake_count_data(n: int = 72) -> pd.DataFrame:
     speed_std = rng.normal(6.0, 1.0, size=n)
     hour = np.resize(np.array([2, 0, 1]), n)
     year = np.resize(np.array([2018, 2017]), n)
+    interstate = np.resize(np.array([1, 0]), n)
     group = np.repeat(np.arange(n // 3), 3)
     exposure = rng.uniform(0.5, 2.0, size=n)
     eta = (
@@ -267,6 +400,7 @@ def _generic_fake_count_data(n: int = 72) -> pd.DataFrame:
         + 0.15 * (hour == 1)
         - 0.10 * (hour == 2)
         + 0.08 * (year == 2018)
+        - 0.05 * (interstate == 0)
     )
     mu = np.exp(eta)
     crashes = rng.poisson(mu)
@@ -279,6 +413,7 @@ def _generic_fake_count_data(n: int = 72) -> pd.DataFrame:
             "speed_std": speed_std,
             "Hour": hour,
             "Year": year,
+            "Interstate": interstate,
             "UniqueID": group,
         }
     )

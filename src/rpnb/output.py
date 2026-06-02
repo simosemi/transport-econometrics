@@ -254,6 +254,10 @@ def build_parameter_table(
             "parameter": names,
             "component": components,
             "variable": variables,
+            "interpretation": [
+                _parameter_interpretation(component, variable)
+                for component, variable in zip(components, variables)
+            ],
             "estimate": estimates,
             "std_error": std_errors,
             "z_value": z_values,
@@ -261,3 +265,23 @@ def build_parameter_table(
             "incidence_rate_ratio": irr,
         }
     )
+
+
+def _parameter_interpretation(component: str, variable: str) -> str:
+    if component == "random_mean":
+        return (
+            f"average/mean effect for {variable}; for generated categorical dummies, "
+            "this is relative to the declared reference category"
+        )
+    if component == "random_sd":
+        return (
+            f"heterogeneity/standard deviation for {variable}; for generated categorical "
+            "dummies, this is heterogeneity in the relative effect"
+        )
+    if component == "fixed_mean":
+        return f"non-random fixed effect for {variable}"
+    if component == "dispersion":
+        return "negative binomial dispersion parameter"
+    if component == "random_correlation":
+        return f"correlation between random parameters {variable}"
+    return component

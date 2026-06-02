@@ -37,6 +37,26 @@ class CategoricalVariableSpec:
 
 
 @dataclass(frozen=True)
+class RandomCategoricalVariableSpec:
+    """Configuration for one categorical variable with random dummy coefficients."""
+
+    name: str
+    reference: Any
+    distribution: str = "normal"
+    start_mean: float = 0.0
+    start_sd: float = 0.25
+
+    def __post_init__(self) -> None:
+        if self.distribution.lower() != "normal":
+            raise ValueError(
+                f"Unsupported random parameter distribution for {self.name!r}: "
+                f"{self.distribution!r}. RPNB currently supports normal only."
+            )
+        if self.start_sd <= 0:
+            raise ValueError(f"start_sd for {self.name!r} must be positive.")
+
+
+@dataclass(frozen=True)
 class ModelSpec:
     """Complete model, simulation, estimation, and output specification."""
 
@@ -45,6 +65,7 @@ class ModelSpec:
     fixed: tuple[str, ...] = ()
     fixed_categorical: tuple[CategoricalVariableSpec, ...] = ()
     random: tuple[RandomParameterSpec, ...] = ()
+    random_categorical: tuple[RandomCategoricalVariableSpec, ...] = ()
     group_id: str | None = None
     intercept: bool = True
     draws: int = 200
@@ -68,6 +89,9 @@ class ModelSpec:
         data = asdict(self)
         data["fixed_categorical"] = [asdict(item) for item in self.fixed_categorical]
         data["random"] = [asdict(item) for item in self.random]
+        data["random_categorical"] = [
+            asdict(item) for item in self.random_categorical
+        ]
         return data
 
 
@@ -108,25 +132,27 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
         model, "random", "random_variables", "random_parameters", default=()
     )
     distributions = model.get("random_parameter_distributions", {})
-    random_raw = _parse_random_container(random_raw)
-    random_specs = _parse_random_parameters(random_raw, distributions)
+    random_continuous_raw, random_categorical_raw = _parse_random_terms(random_raw)
+    random_specs = _parse_random_parameters(random_continuous_raw, distributions)
+    random_categorical_specs = _parse_random_categorical_variables(
+        random_categorical_raw,
+        distributions,
+    )
 
     fixed_names = tuple(str(item) for item in fixed_continuous)
     categorical_names = tuple(item.name for item in fixed_categorical)
     random_names = tuple(item.name for item in random_specs)
+    random_categorical_names = tuple(item.name for item in random_categorical_specs)
     group_id = _first_present(model, "group_id", "panel_id", "panel", "group", default=None)
-    duplicates = _duplicates(
-        (
-            str(dependent),
-            str(offset),
-            *fixed_names,
-            *categorical_names,
-            *random_names,
-            *(() if group_id is None else (str(group_id),)),
-        )
+    _validate_variable_roles(
+        dependent=str(dependent),
+        offset=str(offset),
+        fixed_names=fixed_names,
+        fixed_categorical_names=categorical_names,
+        random_names=random_names,
+        random_categorical_names=random_categorical_names,
+        group_id=None if group_id is None else str(group_id),
     )
-    if duplicates:
-        raise ValueError(f"Variables may not appear in multiple roles: {duplicates}")
 
     intercept = bool(_first_present(model, "intercept", "add_intercept", default=True))
     correlated = bool(
@@ -201,6 +227,7 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
         fixed=fixed_names,
         fixed_categorical=fixed_categorical,
         random=tuple(random_specs),
+        random_categorical=tuple(random_categorical_specs),
         group_id=None if group_id is None else str(group_id),
         intercept=intercept,
         draws=draws,
@@ -284,18 +311,19 @@ def _parse_categorical_variables(categorical_raw: Any) -> list[CategoricalVariab
     return specs
 
 
-def _parse_random_container(random_raw: Any) -> Any:
+def _parse_random_terms(random_raw: Any) -> tuple[Any, Any]:
     if not isinstance(random_raw, dict):
-        return random_raw
+        return random_raw, {}
     structured_keys = {"continuous", "numeric", "variables", "categorical", "factor", "factors"}
     if not (set(random_raw) & structured_keys):
-        return random_raw
-    categorical_raw = _first_present(
-        random_raw, "categorical", "factor", "factors", default=None
+        return random_raw, {}
+    continuous_raw = _first_present(
+        random_raw, "continuous", "numeric", "variables", default=()
     )
-    if categorical_raw:
-        raise ValueError("Random categorical/factor variables are not supported.")
-    return _first_present(random_raw, "continuous", "numeric", "variables", default=())
+    categorical_raw = _first_present(
+        random_raw, "categorical", "factor", "factors", default={}
+    )
+    return continuous_raw, categorical_raw
 
 
 def _parse_random_parameters(
@@ -347,6 +375,81 @@ def _parse_random_parameters(
             )
         )
     return specs
+
+
+def _parse_random_categorical_variables(
+    categorical_raw: Any, distributions: dict[str, Any] | None
+) -> list[RandomCategoricalVariableSpec]:
+    if categorical_raw is None:
+        return []
+    if not isinstance(categorical_raw, dict):
+        raise ValueError("random.categorical must be a mapping of variable names to references.")
+    distributions = distributions or {}
+    specs: list[RandomCategoricalVariableSpec] = []
+    for name, config in categorical_raw.items():
+        if not isinstance(config, dict):
+            config = {"reference": config}
+        if "reference" not in config:
+            raise ValueError(f"Random categorical variable {name!r} requires a reference value.")
+        dist_config = distributions.get(name, {})
+        if isinstance(dist_config, str):
+            dist_config = {"distribution": dist_config}
+        merged = {**dist_config, **config}
+        specs.append(
+            RandomCategoricalVariableSpec(
+                name=str(name),
+                reference=merged["reference"],
+                distribution=str(merged.get("distribution", merged.get("dist", "normal"))),
+                start_mean=float(merged.get("start_mean", merged.get("mean", 0.0))),
+                start_sd=float(merged.get("start_sd", merged.get("sd", 0.25))),
+            )
+        )
+    return specs
+
+
+def _validate_variable_roles(
+    dependent: str,
+    offset: str,
+    fixed_names: tuple[str, ...],
+    fixed_categorical_names: tuple[str, ...],
+    random_names: tuple[str, ...],
+    random_categorical_names: tuple[str, ...],
+    group_id: str | None,
+) -> None:
+    for variable in (*fixed_names, *fixed_categorical_names, *random_names, *random_categorical_names):
+        if variable == offset:
+            raise ValueError(
+                f"Offset variable {offset} has coefficient fixed at 1 and cannot be listed "
+                "as fixed or random."
+            )
+    for variable in fixed_names:
+        if variable in random_names:
+            raise ValueError(
+                f"Variable {variable} is already modeled as a random parameter. "
+                f"Its mean effect is estimated as beta_random_mean[{variable}]; "
+                "do not also list it as fixed."
+            )
+    for variable in fixed_categorical_names:
+        if variable in random_categorical_names:
+            raise ValueError(
+                f"Categorical variable {variable} is already modeled as a random parameter. "
+                f"Its generated dummy mean effects are estimated as beta_random_mean[{variable}_value]; "
+                "do not also list it as fixed."
+            )
+
+    duplicates = _duplicates(
+        (
+            dependent,
+            offset,
+            *fixed_names,
+            *fixed_categorical_names,
+            *random_names,
+            *random_categorical_names,
+            *(() if group_id is None else (group_id,)),
+        )
+    )
+    if duplicates:
+        raise ValueError(f"Variables may not appear in multiple roles: {duplicates}")
 
 
 def _duplicates(values: tuple[str, ...]) -> list[str]:
