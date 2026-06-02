@@ -61,14 +61,29 @@ model:
   dependent: crashes
   offset: log_exposure
   fixed:
-    - speed_limit
-    - wet_road
+    continuous:
+      - speed_mean
+      - Log_Hourly_volume
+    categorical:
+      Hour:
+        reference: 0
+      Year:
+        reference: 2017
   random:
-    truck_share:
-      distribution: normal
-      start_mean: 0.0
-      start_sd: 0.25
-  group_id: segment_id
+    continuous:
+      speed_std:
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+      RtPvdShldrWidth:
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+      TruckPercent:
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+  group_id: UniqueID
   intercept: true
   correlated_random_parameters: false
   missing: drop
@@ -84,11 +99,18 @@ estimation:
   covariance: bfgs
   chunk_size: 10000
   workers: 1
+  checkpoint_interval: 10
   start_alpha: 0.5
 
 output:
   directory: runs
 ```
+
+Categorical fixed variables are dummy-coded automatically. The declared
+reference category is dropped, and dummy coefficient names use
+`variable_value`, such as `Hour_1` and `Year_2018`. The older shorthand
+`fixed: [x1, x2]` and `random: {z1: {...}}` remains supported for continuous
+variables.
 
 ## Command Line Use
 
@@ -96,10 +118,27 @@ output:
 rpnb fit --data crashes.csv --spec model.yaml --out runs
 ```
 
+RPNB writes optimizer checkpoints every `checkpoint_interval` iterations. To
+resume after a walltime interruption:
+
+```powershell
+rpnb fit --resume runs\rpnb_YYYYMMDD_HHMMSS_microseconds
+```
+
+The resume command loads the previous `model_spec.yaml`, `run_metadata.yaml`,
+and `checkpoints\checkpoint_latest.npz`. You can override paths if needed:
+
+```powershell
+rpnb fit --resume runs\rpnb_YYYYMMDD_HHMMSS_microseconds --data crashes.csv --spec model.yaml
+```
+
 Each run creates a timestamped directory containing:
 
 - `rpnb.log`
 - `model_spec.yaml`
+- `run_metadata.yaml`
+- `checkpoints/checkpoint_latest.npz`
+- `checkpoints/checkpoint_latest.json`
 - `coefficients.csv`
 - `fit_statistics.csv`
 - `convergence.csv`
@@ -117,8 +156,12 @@ from rpnb import RandomParametersNegativeBinomial
 model = RandomParametersNegativeBinomial(
     dependent="crashes",
     offset="log_exposure",
-    fixed=["speed_limit", "wet_road"],
-    random=["truck_share"],
+    fixed=["speed_mean", "Log_Hourly_volume"],
+    fixed_categorical=[
+        {"Hour": {"reference": 0}},
+        {"Year": {"reference": 2017}},
+    ],
+    random=["speed_std", "TruckPercent"],
     group_id="segment_id",
     draws=500,
     draw_type="sobol",

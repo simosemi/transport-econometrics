@@ -29,13 +29,24 @@ def estimate_mle(
     method: str = "BFGS",
     maxiter: int = 1000,
     tolerance: float = 1e-6,
+    callback: Callable[[int, np.ndarray], None] | None = None,
+    initial_iteration: int = 0,
 ) -> OptimizationDiagnostics:
     """Minimize a negative log likelihood with SciPy."""
+
+    iteration = int(initial_iteration)
+
+    def scipy_callback(params: np.ndarray) -> None:
+        nonlocal iteration
+        iteration += 1
+        if callback is not None:
+            callback(iteration, np.asarray(params, dtype=float))
 
     result = minimize(
         objective,
         np.asarray(start_params, dtype=float),
         method=method,
+        callback=scipy_callback,
         options={"maxiter": maxiter, "gtol": tolerance, "disp": False},
     )
     gradient_norm = None

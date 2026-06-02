@@ -2,12 +2,14 @@ model:
   dependent: crashes
   offset: log_exposure
   fixed:
-    - x1
+    continuous:
+      - x1
   random:
-    z1:
-      distribution: normal
-      start_mean: 0.0
-      start_sd: 0.25
+    continuous:
+      z1:
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.25
   group_id: group
   intercept: true
   correlated_random_parameters: false
@@ -24,6 +26,7 @@ estimation:
   covariance: bfgs
   chunk_size: 10000
   workers: 1
+  checkpoint_interval: 10
   start_alpha: 0.5
 
 output:

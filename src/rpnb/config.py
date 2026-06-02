@@ -29,12 +29,21 @@ class RandomParameterSpec:
 
 
 @dataclass(frozen=True)
+class CategoricalVariableSpec:
+    """Configuration for one fixed categorical variable."""
+
+    name: str
+    reference: Any
+
+
+@dataclass(frozen=True)
 class ModelSpec:
     """Complete model, simulation, estimation, and output specification."""
 
     dependent: str
     offset: str
     fixed: tuple[str, ...] = ()
+    fixed_categorical: tuple[CategoricalVariableSpec, ...] = ()
     random: tuple[RandomParameterSpec, ...] = ()
     group_id: str | None = None
     intercept: bool = True
@@ -47,12 +56,14 @@ class ModelSpec:
     covariance: str = "bfgs"
     chunk_size: int | None = 10_000
     workers: int = 1
+    checkpoint_interval: int = 10
     start_alpha: float = 0.5
     output_dir: str = "runs"
     missing: str = "drop"
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        data["fixed_categorical"] = [asdict(item) for item in self.fixed_categorical]
         data["random"] = [asdict(item) for item in self.random]
         return data
 
@@ -86,22 +97,34 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
             "to log(mu) with coefficient fixed at 1."
         )
 
-    fixed = _as_tuple(
-        _first_present(model, "fixed", "fixed_variables", "fixed_covariates", default=())
+    fixed_raw = _first_present(
+        model, "fixed", "fixed_variables", "fixed_covariates", default=()
     )
+    fixed_continuous, fixed_categorical = _parse_fixed_terms(fixed_raw)
     random_raw = _first_present(
         model, "random", "random_variables", "random_parameters", default=()
     )
     distributions = model.get("random_parameter_distributions", {})
+    random_raw = _parse_random_container(random_raw)
     random_specs = _parse_random_parameters(random_raw, distributions)
 
-    fixed_names = tuple(str(item) for item in fixed)
+    fixed_names = tuple(str(item) for item in fixed_continuous)
+    categorical_names = tuple(item.name for item in fixed_categorical)
     random_names = tuple(item.name for item in random_specs)
-    duplicates = _duplicates((*fixed_names, *random_names))
-    if duplicates:
-        raise ValueError(f"Variables may appear only once across fixed and random terms: {duplicates}")
-
     group_id = _first_present(model, "group_id", "panel_id", "panel", "group", default=None)
+    duplicates = _duplicates(
+        (
+            str(dependent),
+            str(offset),
+            *fixed_names,
+            *categorical_names,
+            *random_names,
+            *(() if group_id is None else (str(group_id),)),
+        )
+    )
+    if duplicates:
+        raise ValueError(f"Variables may not appear in multiple roles: {duplicates}")
+
     intercept = bool(_first_present(model, "intercept", "add_intercept", default=True))
     correlated = bool(
         _first_present(
@@ -133,6 +156,16 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
     workers_raw = _first_present(estimation, "workers", "n_jobs", "processes", default=None)
     if workers_raw is None:
         workers_raw = _first_present(simulation, "workers", "n_jobs", "processes", default=1)
+    checkpoint_interval = int(
+        _first_present(
+            estimation,
+            "checkpoint_interval",
+            "checkpoint_every",
+            default=10,
+        )
+    )
+    if checkpoint_interval < 0:
+        raise ValueError("checkpoint_interval must be non-negative.")
     start_alpha = float(_first_present(estimation, "start_alpha", "alpha_start", default=0.5))
     if start_alpha <= 0:
         raise ValueError("start_alpha must be positive.")
@@ -143,6 +176,7 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
         dependent=str(dependent),
         offset=str(offset),
         fixed=fixed_names,
+        fixed_categorical=fixed_categorical,
         random=tuple(random_specs),
         group_id=None if group_id is None else str(group_id),
         intercept=intercept,
@@ -155,6 +189,7 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
         covariance=covariance.lower(),
         chunk_size=chunk_size,
         workers=int(workers_raw),
+        checkpoint_interval=checkpoint_interval,
         start_alpha=start_alpha,
         output_dir=output_dir,
         missing=missing.lower(),
@@ -174,6 +209,67 @@ def _as_tuple(value: Any) -> tuple[Any, ...]:
     if isinstance(value, str):
         return (value,)
     return tuple(value)
+
+
+def _parse_fixed_terms(
+    fixed_raw: Any,
+) -> tuple[tuple[str, ...], tuple[CategoricalVariableSpec, ...]]:
+    if fixed_raw is None:
+        return (), ()
+    if isinstance(fixed_raw, dict):
+        continuous = _as_tuple(
+            _first_present(
+                fixed_raw,
+                "continuous",
+                "numeric",
+                "variables",
+                default=(),
+            )
+        )
+        categorical_raw = _first_present(
+            fixed_raw,
+            "categorical",
+            "factor",
+            "factors",
+            default={},
+        )
+        return (
+            tuple(str(item) for item in continuous),
+            tuple(_parse_categorical_variables(categorical_raw)),
+        )
+    return tuple(str(item) for item in _as_tuple(fixed_raw)), ()
+
+
+def _parse_categorical_variables(categorical_raw: Any) -> list[CategoricalVariableSpec]:
+    if categorical_raw is None:
+        return []
+    if not isinstance(categorical_raw, dict):
+        raise ValueError("fixed.categorical must be a mapping of variable names to references.")
+
+    specs: list[CategoricalVariableSpec] = []
+    for name, config in categorical_raw.items():
+        if isinstance(config, dict):
+            if "reference" not in config:
+                raise ValueError(f"Categorical variable {name!r} requires a reference value.")
+            reference = config["reference"]
+        else:
+            reference = config
+        specs.append(CategoricalVariableSpec(name=str(name), reference=reference))
+    return specs
+
+
+def _parse_random_container(random_raw: Any) -> Any:
+    if not isinstance(random_raw, dict):
+        return random_raw
+    structured_keys = {"continuous", "numeric", "variables", "categorical", "factor", "factors"}
+    if not (set(random_raw) & structured_keys):
+        return random_raw
+    categorical_raw = _first_present(
+        random_raw, "categorical", "factor", "factors", default=None
+    )
+    if categorical_raw:
+        raise ValueError("Random categorical/factor variables are not supported.")
+    return _first_present(random_raw, "continuous", "numeric", "variables", default=())
 
 
 def _parse_random_parameters(

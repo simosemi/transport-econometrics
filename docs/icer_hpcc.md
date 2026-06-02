@@ -54,8 +54,19 @@ The batch script runs:
 python -m rpopit.cli fit \
   --data /mnt/research/YOUR_GROUP/crashes.csv \
   --spec /mnt/research/YOUR_GROUP/model.yaml \
-  --out /mnt/research/YOUR_GROUP/rpopit_runs
+  --out /mnt/research/YOUR_GROUP/rpopit_runs \
+  --checkpoint-interval 10
 ```
+
+To resume a run after a walltime interruption:
+
+```bash
+sbatch hpcc/run_rpopit.sbatch \
+  --resume /mnt/research/YOUR_GROUP/rpopit_runs/rpopit_YYYYMMDD_HHMMSS_microseconds
+```
+
+The resumed job reads `model_spec.yaml`, `run_metadata.yaml`, and
+`checkpoints/checkpoint_latest.npz` from the previous run directory.
 
 ## 4. Recommended SLURM Settings
 
@@ -79,6 +90,7 @@ estimation:
   covariance: bfgs
   chunk_size: 10000
   workers: 1
+  checkpoint_interval: 10
 ```
 
 Use `workers > 1` when your job has enough memory for several chunks in flight.
@@ -95,6 +107,11 @@ rpopit_runs/
   rpopit_YYYYMMDD_HHMMSS_microseconds/
     rpopit.log
     model_spec.yaml
+    run_metadata.yaml
+    checkpoints/
+      checkpoint_latest.npz
+      checkpoint_latest.json
+      checkpoint_iter_000010.npz
     coefficients.csv
     fit_statistics.csv
     convergence.csv
@@ -110,3 +127,7 @@ slurm_logs/
 
 `timing.csv` is the first place to check for scalability. The most useful fields
 are `average_objective_seconds`, `objective_calls`, and `optimization_seconds`.
+
+Checkpoints store the current optimizer iteration, internal parameter vector,
+current log-likelihood, and optimizer metadata. Set `checkpoint_interval: 0` or
+pass `--checkpoint-interval 0` to disable checkpoint writing.

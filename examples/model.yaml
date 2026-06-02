@@ -1,12 +1,14 @@
 model:
   dependent: severity
   fixed:
-    - x
+    continuous:
+      - x
   random:
-    z:
-      distribution: normal
-      start_mean: -0.2
-      start_sd: 0.3
+    continuous:
+      z:
+        distribution: normal
+        start_mean: -0.2
+        start_sd: 0.3
   group_id: group
   categories: [0, 1, 2]
   correlated_random_parameters: false
@@ -23,6 +25,7 @@ estimation:
   maxiter: 500
   tolerance: 0.0001
   covariance: bfgs
+  checkpoint_interval: 10
 
 output:
   directory: examples/output

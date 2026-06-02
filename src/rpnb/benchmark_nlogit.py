@@ -155,6 +155,7 @@ def _benchmark_spec(draws: int, out_dir: Path) -> dict[str, object]:
             "tolerance": 0.0001,
             "covariance": "bfgs",
             "start_alpha": 0.5,
+            "checkpoint_interval": 10,
         },
         "output": {"directory": str(out_dir / "rpnb_runs")},
     }

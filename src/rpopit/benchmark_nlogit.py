@@ -141,6 +141,7 @@ def _benchmark_spec(draws: int, out_dir: Path, categories: list[int]) -> dict[st
             "maxiter": 1000,
             "tolerance": 0.0001,
             "covariance": "bfgs",
+            "checkpoint_interval": 10,
         },
         "output": {"directory": str(out_dir / "rpopit_runs")},
     }

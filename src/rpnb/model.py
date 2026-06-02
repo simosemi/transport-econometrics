@@ -14,7 +14,13 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from rpnb.config import ModelSpec, RandomParameterSpec, load_model_spec
+from rpnb.checkpoint import load_latest_checkpoint, save_checkpoint, write_run_metadata
+from rpnb.config import (
+    CategoricalVariableSpec,
+    ModelSpec,
+    RandomParameterSpec,
+    load_model_spec,
+)
 from rpnb.draws import generate_draws
 from rpnb.likelihood import simulated_log_likelihood
 from rpnb.marginal_effects import average_marginal_effects, predicted_counts
@@ -43,6 +49,7 @@ class RandomParametersNegativeBinomial:
         dependent: str,
         offset: str,
         fixed: Sequence[str] | None = None,
+        fixed_categorical: Sequence[CategoricalVariableSpec | dict[str, Any]] | None = None,
         random: Sequence[str | RandomParameterSpec] | None = None,
         group_id: str | None = None,
         intercept: bool = True,
@@ -55,6 +62,7 @@ class RandomParametersNegativeBinomial:
         covariance: str = "bfgs",
         chunk_size: int | None = 10_000,
         workers: int = 1,
+        checkpoint_interval: int = 10,
         start_alpha: float = 0.5,
         output_dir: str = "runs",
         missing: str = "drop",
@@ -62,6 +70,10 @@ class RandomParametersNegativeBinomial:
         self.dependent = dependent
         self.offset = offset
         self.fixed = tuple(fixed or ())
+        self.fixed_categorical_specs = tuple(
+            _coerce_categorical_specs(fixed_categorical or ())
+        )
+        self.fixed_categorical = tuple(item.name for item in self.fixed_categorical_specs)
         self.random_specs = tuple(_coerce_random_specs(random or ()))
         self.random = tuple(item.name for item in self.random_specs)
         self.group_id = group_id
@@ -75,6 +87,7 @@ class RandomParametersNegativeBinomial:
         self.covariance = covariance.lower()
         self.chunk_size = chunk_size
         self.workers = int(workers)
+        self.checkpoint_interval = int(checkpoint_interval)
         self.start_alpha = float(start_alpha)
         self.output_dir = output_dir
         self.missing = missing.lower()
@@ -87,11 +100,22 @@ class RandomParametersNegativeBinomial:
             raise ValueError("chunk_size must be positive or None.")
         if self.workers < 1:
             raise ValueError("workers must be at least 1.")
+        if self.checkpoint_interval < 0:
+            raise ValueError("checkpoint_interval must be non-negative.")
         if self.start_alpha <= 0:
             raise ValueError("start_alpha must be positive.")
-        duplicates = _duplicates((*self.fixed, *self.random))
+        duplicates = _duplicates(
+            (
+                self.dependent,
+                self.offset,
+                *self.fixed,
+                *self.fixed_categorical,
+                *self.random,
+                *(() if self.group_id is None else (self.group_id,)),
+            )
+        )
         if duplicates:
-            raise ValueError(f"Variables may appear only once across fixed and random terms: {duplicates}")
+            raise ValueError(f"Variables may not appear in multiple roles: {duplicates}")
         if self.intercept and "Intercept" in self.fixed:
             raise ValueError("Use intercept=True instead of including an 'Intercept' column.")
 
@@ -105,6 +129,7 @@ class RandomParametersNegativeBinomial:
             dependent=spec.dependent,
             offset=spec.offset,
             fixed=spec.fixed,
+            fixed_categorical=spec.fixed_categorical,
             random=spec.random,
             group_id=spec.group_id,
             intercept=spec.intercept,
@@ -117,6 +142,7 @@ class RandomParametersNegativeBinomial:
             covariance=spec.covariance,
             chunk_size=spec.chunk_size,
             workers=spec.workers,
+            checkpoint_interval=spec.checkpoint_interval,
             start_alpha=spec.start_alpha,
             output_dir=spec.output_dir,
             missing=spec.missing,
@@ -132,22 +158,37 @@ class RandomParametersNegativeBinomial:
         save_run: bool = True,
         output_dir: str | Path | None = None,
         export: bool = False,
+        resume_from: str | Path | None = None,
+        spec_path: str | Path | None = None,
     ) -> RPNBResults:
         """Fit the model using simulated maximum likelihood."""
 
         fit_start = time.perf_counter()
         timing: dict[str, float | int] = {}
-        run_dir = _create_run_dir(output_dir or self.output_dir) if save_run else None
+        run_dir = Path(resume_from) if resume_from is not None else (
+            _create_run_dir(output_dir or self.output_dir) if save_run else None
+        )
         logger = _run_logger(run_dir)
         logger.info("Starting RPNB estimation.")
         logger.info("Model specification: %s", self.to_spec_dict())
+        resume_checkpoint = None
+        resume_iteration = 0
+        if resume_from is not None:
+            resume_checkpoint = load_latest_checkpoint(resume_from)
+            resume_iteration = resume_checkpoint.iteration
+            logger.info(
+                "Resuming from checkpoint %s at iteration %s with LL=%s.",
+                resume_checkpoint.path,
+                resume_checkpoint.iteration,
+                resume_checkpoint.log_likelihood,
+            )
 
         prepare_start = time.perf_counter()
         frame = _load_dataframe(data)
         work = self._prepare_frame(frame, logger)
         y = _count_array(work[self.dependent])
         offset = work[self.offset].astype(float).to_numpy()
-        x_fixed = _fixed_matrix(work, self.fixed, self.intercept)
+        x_fixed, fixed_names = self._fixed_design(work)
         x_random = _matrix(work, self.random)
         q = len(self.random)
         group_codes, group_labels, group_indices, order, group_starts, group_counts = (
@@ -171,7 +212,14 @@ class RandomParametersNegativeBinomial:
             q,
         )
 
-        start_params = self._start_params(y, offset)
+        start_params = self._start_params(y, offset, len(fixed_names))
+        if resume_checkpoint is not None:
+            if resume_checkpoint.params.size != start_params.size:
+                raise ValueError(
+                    "Checkpoint parameter vector length does not match this model "
+                    f"({resume_checkpoint.params.size} != {start_params.size})."
+                )
+            start_params = resume_checkpoint.params.copy()
         objective_calls = 0
         objective_seconds = 0.0
         effective_workers = self.workers
@@ -190,7 +238,7 @@ class RandomParametersNegativeBinomial:
             nonlocal objective_calls, objective_seconds
             objective_start = time.perf_counter()
             try:
-                state = self._unpack_params(theta)
+                state = self._unpack_params(theta, len(fixed_names))
                 value = simulated_log_likelihood(
                     beta_fixed=state.fixed,
                     random_means=state.random_means,
@@ -218,13 +266,50 @@ class RandomParametersNegativeBinomial:
                 return 1e100
             return -float(value)
 
+        if run_dir is not None:
+            write_run_metadata(
+                run_dir,
+                {
+                    "package": "rpnb",
+                    "data_path": _data_path_for_metadata(data),
+                    "spec_path": None if spec_path is None else str(Path(spec_path).resolve()),
+                    "resume_from": None if resume_from is None else str(Path(resume_from).resolve()),
+                    "checkpoint_interval": self.checkpoint_interval,
+                },
+            )
+
+        def checkpoint_callback(iteration: int, params: np.ndarray) -> None:
+            if run_dir is None or self.checkpoint_interval <= 0:
+                return
+            if iteration % self.checkpoint_interval != 0:
+                return
+            objective_value = objective(params)
+            save_checkpoint(
+                run_dir,
+                iteration,
+                params,
+                objective_value,
+                -objective_value,
+                metadata={
+                    "package": "rpnb",
+                    "method": "BFGS",
+                    "checkpoint_type": "iteration",
+                    "function_evaluations": objective_calls,
+                    "resumed_from_iteration": resume_iteration,
+                },
+            )
+            logger.info("Saved checkpoint at iteration %s.", iteration)
+
         optimization_start = time.perf_counter()
+        remaining_maxiter = max(self.maxiter - resume_iteration, 1)
         diagnostics = estimate_mle(
             objective,
             start_params,
             method="BFGS",
-            maxiter=self.maxiter,
+            maxiter=remaining_maxiter,
             tolerance=self.tolerance,
+            callback=checkpoint_callback,
+            initial_iteration=resume_iteration,
         )
         timing["optimization_seconds"] = time.perf_counter() - optimization_start
         timing["objective_calls"] = objective_calls
@@ -233,9 +318,32 @@ class RandomParametersNegativeBinomial:
             objective_seconds / objective_calls if objective_calls else 0.0
         )
         logger.info("Optimization finished: %s", diagnostics.message)
+        total_iterations = (
+            resume_iteration + diagnostics.iterations
+            if diagnostics.iterations is not None
+            else None
+        )
+        if run_dir is not None and self.checkpoint_interval > 0:
+            save_checkpoint(
+                run_dir,
+                int(total_iterations or resume_iteration),
+                diagnostics.params,
+                diagnostics.objective_value,
+                diagnostics.log_likelihood,
+                metadata={
+                    "package": "rpnb",
+                    "method": "BFGS",
+                    "checkpoint_type": "final",
+                    "converged": diagnostics.converged,
+                    "status": diagnostics.status,
+                    "message": diagnostics.message,
+                    "function_evaluations": objective_calls,
+                    "resumed_from_iteration": resume_iteration,
+                },
+            )
 
         post_start = time.perf_counter()
-        final_state = self._unpack_params(diagnostics.params)
+        final_state = self._unpack_params(diagnostics.params, len(fixed_names))
         internal_covariance = diagnostics.hess_inv
         if self.covariance == "hessian":
             logger.info("Computing finite-difference Hessian covariance.")
@@ -247,10 +355,12 @@ class RandomParametersNegativeBinomial:
         if process_pool is not None:
             process_pool.shutdown()
 
-        names, components, variables, estimates = self._natural_parameters(diagnostics.params)
+        names, components, variables, estimates = self._natural_parameters(
+            diagnostics.params, fixed_names
+        )
         natural_covariance = None
         if internal_covariance is not None:
-            jacobian = self._natural_jacobian(diagnostics.params)
+            jacobian = self._natural_jacobian(diagnostics.params, fixed_names)
             natural_covariance = jacobian @ internal_covariance @ jacobian.T
 
         parameter_table = build_parameter_table(
@@ -283,7 +393,7 @@ class RandomParametersNegativeBinomial:
             offset,
             group_codes,
             draws,
-            self.fixed_names,
+            fixed_names,
             self.random,
             random_sds=final_state.random_sds,
             cholesky=final_state.cholesky,
@@ -310,7 +420,9 @@ class RandomParametersNegativeBinomial:
             "converged": diagnostics.converged,
             "status": diagnostics.status,
             "message": diagnostics.message,
-            "iterations": diagnostics.iterations,
+            "iterations": total_iterations,
+            "iterations_this_run": diagnostics.iterations,
+            "resumed_from_iteration": resume_iteration,
             "function_evaluations": diagnostics.function_evaluations,
             "gradient_norm": diagnostics.gradient_norm,
             "chunk_size": self.chunk_size,
@@ -345,7 +457,10 @@ class RandomParametersNegativeBinomial:
             "model": {
                 "dependent": self.dependent,
                 "offset": self.offset,
-                "fixed": list(self.fixed),
+                "fixed": _fixed_spec_for_output(
+                    self.fixed,
+                    self.fixed_categorical_specs,
+                ),
                 "random": {
                     item.name: {
                         "distribution": item.distribution,
@@ -370,15 +485,23 @@ class RandomParametersNegativeBinomial:
                 "covariance": self.covariance,
                 "chunk_size": self.chunk_size,
                 "workers": self.workers,
+                "checkpoint_interval": self.checkpoint_interval,
                 "start_alpha": self.start_alpha,
             },
             "output": {"directory": self.output_dir},
         }
 
     def _prepare_frame(self, frame: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
-        columns = [self.dependent, self.offset, *self.fixed, *self.random]
+        columns = [
+            self.dependent,
+            self.offset,
+            *self.fixed,
+            *self.fixed_categorical,
+            *self.random,
+        ]
         if self.group_id is not None:
             columns.append(self.group_id)
+        columns = list(dict.fromkeys(columns))
         missing_columns = [column for column in columns if column not in frame.columns]
         if missing_columns:
             raise ValueError(f"Data are missing required columns: {missing_columns}")
@@ -405,7 +528,34 @@ class RandomParametersNegativeBinomial:
             if not np.isfinite(values.to_numpy(dtype=float)).all():
                 raise ValueError(f"Column {column!r} contains non-finite values.")
             work[column] = values
+        for spec in self.fixed_categorical_specs:
+            if not _series_contains_value(work[spec.name], spec.reference):
+                raise ValueError(
+                    f"Reference category {spec.reference!r} was not found in {spec.name!r}."
+                )
         return work
+
+    def _fixed_design(self, work: pd.DataFrame) -> tuple[np.ndarray, tuple[str, ...]]:
+        pieces: list[np.ndarray] = []
+        names: list[str] = []
+        if self.intercept:
+            pieces.append(np.ones((len(work), 1), dtype=float))
+            names.append("Intercept")
+        if self.fixed:
+            pieces.append(_matrix(work, self.fixed))
+            names.extend(self.fixed)
+        for spec in self.fixed_categorical_specs:
+            dummy_table, dummy_names = _dummy_code_categorical(
+                work[spec.name],
+                spec.name,
+                spec.reference,
+            )
+            if dummy_table.size:
+                pieces.append(dummy_table)
+                names.extend(dummy_names)
+        if not pieces:
+            return np.zeros((len(work), 0), dtype=float), ()
+        return np.column_stack(pieces), tuple(names)
 
     def _group_indices(
         self, work: pd.DataFrame, random_parameters: bool
@@ -437,8 +587,8 @@ class RandomParametersNegativeBinomial:
             indices = list(np.split(order, starts[1:]))
         return codes, np.asarray(labels), indices, order, starts, counts
 
-    def _start_params(self, y: np.ndarray, offset: np.ndarray) -> np.ndarray:
-        fixed = np.zeros(len(self.fixed_names), dtype=float)
+    def _start_params(self, y: np.ndarray, offset: np.ndarray, n_fixed: int) -> np.ndarray:
+        fixed = np.zeros(n_fixed, dtype=float)
         if self.intercept:
             mean_y = max(float(np.mean(y)), 1e-6)
             fixed[0] = np.log(mean_y) - float(np.mean(offset))
@@ -459,10 +609,10 @@ class RandomParametersNegativeBinomial:
         pieces.append(np.array([np.log(alpha_start)], dtype=float))
         return np.concatenate(pieces)
 
-    def _unpack_params(self, theta: np.ndarray) -> ParameterState:
+    def _unpack_params(self, theta: np.ndarray, n_fixed: int) -> ParameterState:
         theta = np.asarray(theta, dtype=float)
         cursor = 0
-        k = len(self.fixed_names)
+        k = n_fixed
         q = len(self.random_specs)
 
         fixed = theta[cursor : cursor + k]
@@ -503,15 +653,15 @@ class RandomParametersNegativeBinomial:
         return cholesky
 
     def _natural_parameters(
-        self, theta: np.ndarray
+        self, theta: np.ndarray, fixed_names: Sequence[str]
     ) -> tuple[list[str], list[str], list[str], np.ndarray]:
-        state = self._unpack_params(theta)
+        state = self._unpack_params(theta, len(fixed_names))
         names: list[str] = []
         components: list[str] = []
         variables: list[str] = []
         values: list[float] = []
 
-        for name, value in zip(self.fixed_names, state.fixed):
+        for name, value in zip(fixed_names, state.fixed):
             names.append(f"beta_fixed[{name}]")
             components.append("fixed_mean")
             variables.append(name)
@@ -552,16 +702,16 @@ class RandomParametersNegativeBinomial:
         values.append(float(state.alpha))
         return names, components, variables, np.asarray(values, dtype=float)
 
-    def _natural_jacobian(self, theta: np.ndarray) -> np.ndarray:
+    def _natural_jacobian(self, theta: np.ndarray, fixed_names: Sequence[str]) -> np.ndarray:
         theta = np.asarray(theta, dtype=float)
-        base = self._natural_parameters(theta)[3]
+        base = self._natural_parameters(theta, fixed_names)[3]
         jacobian = np.empty((base.size, theta.size), dtype=float)
         steps = np.sqrt(np.finfo(float).eps) * np.maximum(np.abs(theta), 1.0)
         for column in range(theta.size):
             step_vector = np.zeros(theta.size, dtype=float)
             step_vector[column] = steps[column]
-            plus = self._natural_parameters(theta + step_vector)[3]
-            minus = self._natural_parameters(theta - step_vector)[3]
+            plus = self._natural_parameters(theta + step_vector, fixed_names)[3]
+            minus = self._natural_parameters(theta - step_vector, fixed_names)[3]
             jacobian[:, column] = (plus - minus) / (2.0 * steps[column])
         return jacobian
 
@@ -581,10 +731,51 @@ def _coerce_random_specs(
     return specs
 
 
+def _coerce_categorical_specs(
+    categorical: Iterable[CategoricalVariableSpec | dict[str, Any]],
+) -> list[CategoricalVariableSpec]:
+    specs: list[CategoricalVariableSpec] = []
+    for item in categorical:
+        if isinstance(item, CategoricalVariableSpec):
+            specs.append(item)
+        elif isinstance(item, dict):
+            if "name" in item and "reference" in item:
+                specs.append(
+                    CategoricalVariableSpec(
+                        name=str(item["name"]),
+                        reference=item["reference"],
+                    )
+                )
+            elif len(item) == 1:
+                name, config = next(iter(item.items()))
+                if isinstance(config, dict):
+                    if "reference" not in config:
+                        raise ValueError(
+                            f"Categorical variable {name!r} requires a reference value."
+                        )
+                    reference = config["reference"]
+                else:
+                    reference = config
+                specs.append(CategoricalVariableSpec(name=str(name), reference=reference))
+            else:
+                raise ValueError(
+                    "Categorical specs must include name/reference or one variable mapping."
+                )
+        else:
+            raise ValueError("Categorical specs must be CategoricalVariableSpec or dict.")
+    return specs
+
+
 def _load_dataframe(data: str | Path | pd.DataFrame) -> pd.DataFrame:
     if isinstance(data, pd.DataFrame):
         return data
     return pd.read_csv(data)
+
+
+def _data_path_for_metadata(data: str | Path | pd.DataFrame) -> str | None:
+    if isinstance(data, pd.DataFrame):
+        return None
+    return str(Path(data).resolve())
 
 
 def _fixed_matrix(work: pd.DataFrame, columns: Sequence[str], intercept: bool) -> np.ndarray:
@@ -595,6 +786,66 @@ def _fixed_matrix(work: pd.DataFrame, columns: Sequence[str], intercept: bool) -
     if matrix.size == 0:
         return ones
     return np.column_stack([ones, matrix])
+
+
+def _dummy_code_categorical(
+    series: pd.Series, variable: str, reference: Any
+) -> tuple[np.ndarray, list[str]]:
+    categories = _ordered_categories(series)
+    if not any(_values_equal(category, reference) for category in categories):
+        raise ValueError(f"Reference category {reference!r} was not found in {variable!r}.")
+    non_reference = [
+        category for category in categories if not _values_equal(category, reference)
+    ]
+    if not non_reference:
+        return np.zeros((len(series), 0), dtype=float), []
+    columns = [
+        series.map(lambda value, category=category: _values_equal(value, category))
+        .astype(float)
+        .to_numpy()
+        for category in non_reference
+    ]
+    names = [f"{variable}_{_format_category_value(category)}" for category in non_reference]
+    return np.column_stack(columns), names
+
+
+def _ordered_categories(series: pd.Series) -> list[Any]:
+    values = list(pd.unique(series.dropna()))
+    try:
+        return sorted(values)
+    except TypeError:
+        return sorted(values, key=lambda value: (type(value).__name__, str(value)))
+
+
+def _series_contains_value(series: pd.Series, reference: Any) -> bool:
+    return any(_values_equal(value, reference) for value in pd.unique(series.dropna()))
+
+
+def _values_equal(left: Any, right: Any) -> bool:
+    return bool(left == right)
+
+
+def _format_category_value(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        text = str(int(value))
+    else:
+        text = str(value)
+    text = text.strip().replace(" ", "_")
+    return "".join(char if char.isalnum() or char == "_" else "_" for char in text)
+
+
+def _fixed_spec_for_output(
+    fixed: Sequence[str], categorical: Sequence[CategoricalVariableSpec]
+) -> list[str] | dict[str, Any]:
+    if not categorical:
+        return list(fixed)
+    return {
+        "continuous": list(fixed),
+        "categorical": {
+            item.name: {"reference": item.reference}
+            for item in categorical
+        },
+    }
 
 
 def _matrix(work: pd.DataFrame, columns: Sequence[str]) -> np.ndarray:

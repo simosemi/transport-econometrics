@@ -8,9 +8,27 @@
 
 set -euo pipefail
 
-DATA=${1:?Usage: sbatch hpcc/run_rpnb.sbatch DATA.csv MODEL.yaml OUT_DIR}
-SPEC=${2:?Usage: sbatch hpcc/run_rpnb.sbatch DATA.csv MODEL.yaml OUT_DIR}
-OUT=${3:-rpnb_runs}
+if [[ "${1:-}" == "--resume" ]]; then
+  RESUME_DIR="${2:?Usage: sbatch hpcc/run_rpnb.sbatch --resume RUN_DIR [CHECKPOINT_INTERVAL]}"
+  CHECKPOINT_INTERVAL="${3:-10}"
+  DATA=""
+  SPEC=""
+  OUT=""
+else
+  DATA=${1:?Usage: sbatch hpcc/run_rpnb.sbatch DATA.csv MODEL.yaml OUT_DIR [CHECKPOINT_INTERVAL]}
+  SPEC=${2:?Usage: sbatch hpcc/run_rpnb.sbatch DATA.csv MODEL.yaml OUT_DIR [CHECKPOINT_INTERVAL]}
+  OUT=${3:-rpnb_runs}
+  CHECKPOINT_INTERVAL="${4:-10}"
+  RESUME_DIR=""
+fi
 
 source .venv-rpnb/bin/activate
-python -m rpnb.cli fit --data "$DATA" --spec "$SPEC" --out "$OUT"
+if [[ -n "${RESUME_DIR}" ]]; then
+  python -m rpnb.cli fit --resume "$RESUME_DIR" --checkpoint-interval "$CHECKPOINT_INTERVAL"
+else
+  python -m rpnb.cli fit \
+    --data "$DATA" \
+    --spec "$SPEC" \
+    --out "$OUT" \
+    --checkpoint-interval "$CHECKPOINT_INTERVAL"
+fi
