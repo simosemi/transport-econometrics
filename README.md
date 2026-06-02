@@ -34,6 +34,9 @@ Cholesky factor and report natural standard deviations and correlations.
 - Average marginal effects on expected crash counts.
 - Preprocessing summaries with numeric statistics, categorical frequencies,
   reference categories, and generated dummy variables.
+- Alternative optimizers: `bfgs`, `lbfgsb`, `nelder-mead`, and `powell`.
+- Optimizer diagnostics, including convergence code/message, gradient norm,
+  Hessian condition number, parameter magnitudes, and termination reason.
 - CSV, Excel, and HTML exports.
 - HPCC SLURM scripts.
 - Simulated-data tests and fixed-only validation against statsmodels.
@@ -96,6 +99,7 @@ simulation:
   seed: 12345
 
 estimation:
+  optimizer: bfgs
   maxiter: 1000
   tolerance: 0.00001
   covariance: bfgs
@@ -163,6 +167,15 @@ Each run creates a timestamped directory containing:
 - `marginal_effects.csv`
 - `rpnb_results.xlsx`
 - `rpnb_results.html`
+
+The `convergence.csv`, Excel convergence sheet, and HTML convergence section
+include the optimizer method, convergence code and message, gradient norm,
+Hessian condition number, largest and smallest parameter magnitudes, and a
+normalized termination reason: `convergence`, `max_iterations`,
+`precision_loss`, `singular_hessian`, `line_search_failure`, or `other`.
+
+Supported `estimation.optimizer` values are `bfgs`, `lbfgsb`, `nelder-mead`,
+and `powell`. BFGS remains the default.
 
 ## Python Use
 

@@ -38,6 +38,16 @@ For large jobs, set `chunk_size` in the YAML spec to limit memory used per
 likelihood block. Use `workers` carefully because each worker needs memory for
 its chunk payload.
 
+Optimizer choice is configured in the YAML spec:
+
+```yaml
+estimation:
+  optimizer: bfgs
+```
+
+Supported values are `bfgs`, `lbfgsb`, `nelder-mead`, and `powell`. BFGS is the
+default.
+
 Recommended checkpoint setting:
 
 ```yaml

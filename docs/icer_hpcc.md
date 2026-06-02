@@ -85,6 +85,7 @@ Recommended YAML settings for large runs:
 
 ```yaml
 estimation:
+  optimizer: bfgs
   maxiter: 1000
   tolerance: 0.0001
   covariance: bfgs
@@ -92,6 +93,9 @@ estimation:
   workers: 1
   checkpoint_interval: 10
 ```
+
+Supported optimizer values are `bfgs`, `lbfgsb`, `nelder-mead`, and `powell`.
+BFGS is the default.
 
 Use `workers > 1` when your job has enough memory for several chunks in flight.
 On some environments process creation may be restricted; `rpopit` falls back to

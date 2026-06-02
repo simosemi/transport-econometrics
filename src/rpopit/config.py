@@ -52,6 +52,7 @@ class ModelSpec:
     seed: int | None = 12345
     maxiter: int = 1000
     tolerance: float = 1e-4
+    optimizer: str = "bfgs"
     covariance: str = "bfgs"
     chunk_size: int | None = 10_000
     workers: int = 1
@@ -134,6 +135,15 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
 
     maxiter = int(_first_present(estimation, "maxiter", "max_iterations", default=1000))
     tolerance = float(_first_present(estimation, "tolerance", "tol", "gtol", default=1e-4))
+    optimizer = str(
+        _first_present(
+            estimation,
+            "optimizer",
+            "optimization_method",
+            "method",
+            default="bfgs",
+        )
+    )
     covariance = str(_first_present(estimation, "covariance", "covariance_type", default="bfgs"))
     chunk_size_raw = _first_present(
         estimation, "chunk_size", "likelihood_chunk_size", default=None
@@ -173,6 +183,7 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
         seed=seed,
         maxiter=maxiter,
         tolerance=tolerance,
+        optimizer=optimizer.lower(),
         covariance=covariance.lower(),
         chunk_size=chunk_size,
         workers=workers,

@@ -39,6 +39,9 @@ model:
   group_id: UniqueID
   correlated_random_parameters: false
   missing: drop
+
+estimation:
+  optimizer: bfgs
 ```
 
 ## rpopit Ordered Probit Model
@@ -69,6 +72,9 @@ model:
   categories: [0, 1, 2, 3]
   correlated_random_parameters: false
   missing: drop
+
+estimation:
+  optimizer: bfgs
 ```
 
 ## Validation Rules
@@ -134,6 +140,40 @@ The summary includes:
 - categorical frequency tables
 - fixed categorical reference categories
 - generated dummy variable names, such as `Hour_1` and `Year_2018`
+
+## Optimizer Diagnostics
+
+RPNB and rpopit export optimizer diagnostics in `convergence.csv`, the
+`convergence` Excel sheet, and the HTML report convergence section.
+
+Supported `estimation.optimizer` values are:
+
+- `bfgs`
+- `lbfgsb`
+- `nelder-mead`
+- `powell`
+
+BFGS is the default when `optimizer` is omitted.
+
+The diagnostics include:
+
+- optimizer method
+- convergence code and convergence message
+- gradient norm
+- Hessian condition number
+- largest and smallest absolute parameter magnitudes
+- normalized termination reason
+
+The termination reason is one of:
+
+- `convergence`
+- `max_iterations`
+- `precision_loss`
+- `singular_hessian`
+- `line_search_failure`
+- `other`
+
+Boolean columns also report whether the run terminated due to each named reason.
 
 Backward-compatible shorthand remains available for continuous-only models:
 

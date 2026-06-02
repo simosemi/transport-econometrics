@@ -33,6 +33,9 @@ from rpopit.optimizer import (
     covariance_from_hessian,
     estimate_mle,
     finite_difference_hessian,
+    matrix_condition_number,
+    normalize_optimizer,
+    optimizer_termination_report,
 )
 from rpopit.output import RPOpitResults, build_parameter_table
 
@@ -63,6 +66,7 @@ class RandomParametersOrderedProbit:
         seed: int | None = 12345,
         maxiter: int = 1000,
         tolerance: float = 1e-4,
+        optimizer: str = "bfgs",
         covariance: str = "bfgs",
         chunk_size: int | None = 10_000,
         workers: int = 1,
@@ -86,6 +90,7 @@ class RandomParametersOrderedProbit:
         self.seed = seed
         self.maxiter = int(maxiter)
         self.tolerance = float(tolerance)
+        self.optimizer = normalize_optimizer(optimizer)
         self.covariance = covariance.lower()
         self.chunk_size = chunk_size
         self.workers = int(workers)
@@ -130,6 +135,7 @@ class RandomParametersOrderedProbit:
             seed=spec.seed,
             maxiter=spec.maxiter,
             tolerance=spec.tolerance,
+            optimizer=spec.optimizer,
             covariance=spec.covariance,
             chunk_size=spec.chunk_size,
             workers=spec.workers,
@@ -280,7 +286,7 @@ class RandomParametersOrderedProbit:
                 -objective_value,
                 metadata={
                     "package": "rpopit",
-                    "method": "BFGS",
+                    "method": self.optimizer,
                     "checkpoint_type": "iteration",
                     "function_evaluations": objective_calls,
                     "resumed_from_iteration": resume_iteration,
@@ -293,7 +299,7 @@ class RandomParametersOrderedProbit:
         diagnostics = estimate_mle(
             objective,
             start_params,
-            method="BFGS",
+            method=self.optimizer,
             maxiter=remaining_maxiter,
             tolerance=self.tolerance,
             callback=checkpoint_callback,
@@ -320,7 +326,7 @@ class RandomParametersOrderedProbit:
                 diagnostics.log_likelihood,
                 metadata={
                     "package": "rpopit",
-                    "method": "BFGS",
+                    "method": self.optimizer,
                     "checkpoint_type": "final",
                     "converged": diagnostics.converged,
                     "status": diagnostics.status,
@@ -335,10 +341,12 @@ class RandomParametersOrderedProbit:
             diagnostics.params, len(fixed_names), len(categories) - 1
         )
         internal_covariance = diagnostics.hess_inv
+        hessian_condition_number = diagnostics.hessian_condition_number
         if self.covariance == "hessian":
             logger.info("Computing finite-difference Hessian covariance.")
             try:
                 hessian = finite_difference_hessian(objective, diagnostics.params)
+                hessian_condition_number = matrix_condition_number(hessian)
                 internal_covariance = covariance_from_hessian(hessian)
             except (FloatingPointError, ValueError, np.linalg.LinAlgError) as exc:
                 logger.warning("Falling back to BFGS covariance: %s", exc)
@@ -404,15 +412,30 @@ class RandomParametersOrderedProbit:
             "draws": int(self.draws if q else 1),
             "correlated_random_parameters": self.correlated_random_parameters,
         }
+        termination_report = optimizer_termination_report(
+            diagnostics.converged,
+            diagnostics.status,
+            diagnostics.message,
+            hessian_condition_number,
+        )
         convergence = {
             "converged": diagnostics.converged,
             "status": diagnostics.status,
             "message": diagnostics.message,
+            "optimizer_method": diagnostics.method,
+            "optimizer_status_code": diagnostics.status,
+            "optimizer_message": diagnostics.message,
+            "convergence_code": diagnostics.status,
+            "convergence_message": diagnostics.message,
             "iterations": total_iterations,
             "iterations_this_run": diagnostics.iterations,
             "resumed_from_iteration": resume_iteration,
             "function_evaluations": diagnostics.function_evaluations,
             "gradient_norm": diagnostics.gradient_norm,
+            "hessian_condition_number": hessian_condition_number,
+            "largest_parameter_magnitude": diagnostics.largest_parameter_magnitude,
+            "smallest_parameter_magnitude": diagnostics.smallest_parameter_magnitude,
+            **termination_report,
             "chunk_size": self.chunk_size,
             "workers_requested": self.workers,
             "workers_used": effective_workers,
@@ -469,6 +492,7 @@ class RandomParametersOrderedProbit:
             "estimation": {
                 "maxiter": self.maxiter,
                 "tolerance": self.tolerance,
+                "optimizer": self.optimizer,
                 "covariance": self.covariance,
                 "chunk_size": self.chunk_size,
                 "workers": self.workers,

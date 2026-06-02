@@ -21,6 +21,7 @@ simulation:
   seed: 2026
 
 estimation:
+  optimizer: bfgs
   maxiter: 300
   tolerance: 0.00001
   covariance: bfgs

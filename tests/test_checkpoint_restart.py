@@ -1,4 +1,5 @@
 import yaml
+import pandas as pd
 
 from rpopit.checkpoint import load_latest_checkpoint as load_rpopit_checkpoint
 from rpopit.model import RandomParametersOrderedProbit
@@ -37,6 +38,7 @@ def test_rpopit_checkpoint_and_resume(tmp_path):
 
     assert checkpoint.iteration >= 1
     assert checkpoint.params.size == first.fit_statistics["n_parameters"]
+    _assert_optimizer_diagnostics_exported(first, "rpopit_results.html")
 
     resumed_model = RandomParametersOrderedProbit(
         dependent="severity",
@@ -87,6 +89,7 @@ def test_rpnb_checkpoint_and_resume(tmp_path):
 
     assert checkpoint.iteration >= 1
     assert checkpoint.params.size == first.fit_statistics["n_parameters"]
+    _assert_optimizer_diagnostics_exported(first, "rpnb_results.html")
 
     resumed_model = RandomParametersNegativeBinomial(
         dependent="crashes",
@@ -159,3 +162,48 @@ def test_rpnb_cli_resume_uses_previous_run_metadata(tmp_path):
 
     assert resume_status == 0
     assert load_rpnb_checkpoint(run_dir).iteration >= 1
+
+
+def _assert_optimizer_diagnostics_exported(results, html_name):
+    expected_columns = [
+        "optimizer_method",
+        "optimizer_status_code",
+        "optimizer_message",
+        "convergence_code",
+        "convergence_message",
+        "gradient_norm",
+        "hessian_condition_number",
+        "largest_parameter_magnitude",
+        "smallest_parameter_magnitude",
+        "termination_reason",
+        "terminated_due_to_convergence",
+        "terminated_due_to_max_iterations",
+        "terminated_due_to_precision_loss",
+        "terminated_due_to_singular_hessian",
+        "terminated_due_to_line_search_failure",
+    ]
+
+    for column in expected_columns:
+        assert column in results.convergence
+    assert results.convergence["optimizer_method"] == "bfgs"
+    assert results.convergence["optimizer_status_code"] == results.convergence["status"]
+    assert results.convergence["optimizer_message"] == results.convergence["message"]
+    assert results.convergence["convergence_code"] == results.convergence["status"]
+    assert results.convergence["convergence_message"] == results.convergence["message"]
+    assert results.convergence["termination_reason"] in {
+        "convergence",
+        "max_iterations",
+        "precision_loss",
+        "singular_hessian",
+        "line_search_failure",
+        "other",
+    }
+
+    paths = results.export(results.run_dir)
+    convergence_csv = pd.read_csv(paths["convergence_csv"])
+    convergence_xlsx = pd.read_excel(paths["excel"], sheet_name="convergence")
+    html = (results.run_dir / html_name).read_text(encoding="utf-8")
+    for column in expected_columns:
+        assert column in convergence_csv.columns
+        assert column in convergence_xlsx.columns
+        assert column in html
