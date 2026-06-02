@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 
 from rpopit.model import RandomParametersOrderedProbit
@@ -90,6 +91,73 @@ def test_unsupported_optimizer_raises_clear_error():
         )
 
 
+def test_rpnb_multistart_exports_summary_and_local_solutions(tmp_path):
+    data, _ = simulate_negative_binomial_data(
+        n_groups=48,
+        observations_per_group=2,
+        fixed_betas={"x1": 0.25},
+        random_means={},
+        alpha=0.5,
+        seed=202612,
+    )
+    model = RandomParametersNegativeBinomial(
+        dependent="crashes",
+        offset="log_exposure",
+        fixed=["x1"],
+        random=[],
+        multistart=3,
+        multistart_random_seed=123,
+        maxiter=60,
+        tolerance=1e-5,
+        checkpoint_interval=0,
+    )
+
+    results = model.fit(data, save_run=True, output_dir=tmp_path, export=True)
+
+    _assert_multistart_outputs(results, parameter_name="alpha")
+    assert (results.run_dir / "multistart_summary.csv").exists()
+    assert (results.run_dir / "multistart_local_solutions.csv").exists()
+
+    exported_summary = pd.read_csv(results.run_dir / "multistart_summary.csv")
+    exported_solutions = pd.read_csv(results.run_dir / "multistart_local_solutions.csv")
+    assert len(exported_summary) == 3
+    assert set(exported_solutions["start_id"]) == {1, 2, 3}
+
+
+def test_rpopit_multistart_exports_summary_and_local_solutions(tmp_path):
+    data, _ = simulate_ordered_probit_data(
+        n_groups=48,
+        observations_per_group=2,
+        fixed_betas={"x": 0.5},
+        random_means={},
+        random_sds={},
+        thresholds=(-0.3, 0.7),
+        seed=202613,
+    )
+    model = RandomParametersOrderedProbit(
+        dependent="severity",
+        fixed=["x"],
+        random=[],
+        categories=[0, 1, 2],
+        multistart=3,
+        multistart_random_seed=123,
+        maxiter=60,
+        tolerance=1e-5,
+        checkpoint_interval=0,
+    )
+
+    results = model.fit(data, save_run=True, output_dir=tmp_path, export=True)
+
+    _assert_multistart_outputs(results, parameter_name="threshold[1]")
+    assert (results.run_dir / "multistart_summary.csv").exists()
+    assert (results.run_dir / "multistart_local_solutions.csv").exists()
+
+    exported_summary = pd.read_csv(results.run_dir / "multistart_summary.csv")
+    exported_solutions = pd.read_csv(results.run_dir / "multistart_local_solutions.csv")
+    assert len(exported_summary) == 3
+    assert set(exported_solutions["start_id"]) == {1, 2, 3}
+
+
 def _assert_common_estimates_close(left, right, atol: float = 2e-3) -> None:
     left_estimates = left.set_index("parameter")["estimate"].sort_index()
     right_estimates = right.set_index("parameter")["estimate"].sort_index()
@@ -102,3 +170,21 @@ def _assert_common_estimates_close(left, right, atol: float = 2e-3) -> None:
         atol=atol,
         rtol=atol,
     )
+
+
+def _assert_multistart_outputs(results, parameter_name: str) -> None:
+    summary = results.multistart_summary
+    local_solutions = results.local_solutions
+    assert summary is not None
+    assert local_solutions is not None
+    assert len(summary) == 3
+    assert summary["optimizer"].tolist() == ["bfgs", "bfgs", "bfgs"]
+    assert summary["starting_log_likelihood"].notna().all()
+    assert summary["final_log_likelihood"].notna().all()
+    assert summary["is_best"].sum() == 1
+    assert results.fit_statistics["multistart_completed"] == 3
+    assert results.convergence["selected_start_id"] == int(
+        summary.loc[summary["is_best"], "start_id"].iloc[0]
+    )
+    assert results.log_likelihood == pytest.approx(summary["final_log_likelihood"].max())
+    assert parameter_name in set(local_solutions["parameter"])

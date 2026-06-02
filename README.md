@@ -35,6 +35,7 @@ Cholesky factor and report natural standard deviations and correlations.
 - Preprocessing summaries with numeric statistics, categorical frequencies,
   reference categories, and generated dummy variables.
 - Alternative optimizers: `bfgs`, `lbfgsb`, `nelder-mead`, and `powell`.
+- Multi-start optimization with seeded perturbations around supplied start values.
 - Optimizer diagnostics, including convergence code/message, gradient norm,
   Hessian condition number, parameter magnitudes, and termination reason.
 - CSV, Excel, and HTML exports.
@@ -100,6 +101,8 @@ simulation:
 
 estimation:
   optimizer: bfgs
+  multistart: 1
+  random_seed: 12345
   maxiter: 1000
   tolerance: 0.00001
   covariance: bfgs
@@ -163,6 +166,8 @@ Each run creates a timestamped directory containing:
 - `preprocessing_summary.csv`
 - `preprocessing_summary.xlsx`
 - `preprocessing_summary.html`
+- `multistart_summary.csv`
+- `multistart_local_solutions.csv`
 - `predictions.csv`
 - `marginal_effects.csv`
 - `rpnb_results.xlsx`
@@ -176,6 +181,11 @@ normalized termination reason: `convergence`, `max_iterations`,
 
 Supported `estimation.optimizer` values are `bfgs`, `lbfgsb`, `nelder-mead`,
 and `powell`. BFGS remains the default.
+
+Set `estimation.multistart` above 1 to fit from multiple starting vectors. RPNB
+uses the supplied/default start vector first, then generates seeded perturbations
+around it using `estimation.random_seed`. The best final log-likelihood is used
+for the reported model, and all local solutions are exported.
 
 ## Python Use
 

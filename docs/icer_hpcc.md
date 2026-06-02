@@ -86,6 +86,8 @@ Recommended YAML settings for large runs:
 ```yaml
 estimation:
   optimizer: bfgs
+  multistart: 1
+  random_seed: 12345
   maxiter: 1000
   tolerance: 0.0001
   covariance: bfgs
@@ -96,6 +98,9 @@ estimation:
 
 Supported optimizer values are `bfgs`, `lbfgsb`, `nelder-mead`, and `powell`.
 BFGS is the default.
+
+For difficult likelihood surfaces, increase `multistart` to run several seeded
+local optimizations and select the best final log-likelihood.
 
 Use `workers > 1` when your job has enough memory for several chunks in flight.
 On some environments process creation may be restricted; `rpopit` falls back to

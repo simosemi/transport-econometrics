@@ -18,6 +18,8 @@ class RPOpitResults:
     parameter_table: pd.DataFrame
     fit_statistics: dict[str, Any]
     convergence: dict[str, Any]
+    multistart_summary: pd.DataFrame | None = None
+    local_solutions: pd.DataFrame | None = None
     predicted_probabilities: pd.DataFrame | None = None
     marginal_effects: pd.DataFrame | None = None
     run_dir: Path | None = None
@@ -65,10 +67,19 @@ class RPOpitResults:
             "excel": directory / "rpopit_results.xlsx",
             "html": directory / "rpopit_results.html",
         }
+        if self.multistart_summary is not None:
+            paths["multistart_summary_csv"] = directory / "multistart_summary.csv"
+        if self.local_solutions is not None:
+            paths["local_solutions_csv"] = directory / "multistart_local_solutions.csv"
+
         self.parameter_table.to_csv(paths["coefficients_csv"], index=False)
         pd.DataFrame([self.fit_statistics]).to_csv(paths["fit_statistics_csv"], index=False)
         pd.DataFrame([self.convergence]).to_csv(paths["convergence_csv"], index=False)
         pd.DataFrame([self.timing]).to_csv(paths["timing_csv"], index=False)
+        if self.multistart_summary is not None:
+            self.multistart_summary.to_csv(paths["multistart_summary_csv"], index=False)
+        if self.local_solutions is not None:
+            self.local_solutions.to_csv(paths["local_solutions_csv"], index=False)
 
         if self.predicted_probabilities is not None:
             paths["predicted_probabilities_csv"] = directory / "predicted_probabilities.csv"
@@ -88,6 +99,14 @@ class RPOpitResults:
                 writer, sheet_name="convergence", index=False
             )
             pd.DataFrame([self.timing]).to_excel(writer, sheet_name="timing", index=False)
+            if self.multistart_summary is not None:
+                self.multistart_summary.to_excel(
+                    writer, sheet_name="multistart_summary", index=False
+                )
+            if self.local_solutions is not None:
+                self.local_solutions.to_excel(
+                    writer, sheet_name="local_solutions", index=False
+                )
             if self.predicted_probabilities is not None:
                 self.predicted_probabilities.to_excel(
                     writer, sheet_name="predicted_probabilities", index=False
@@ -112,6 +131,20 @@ class RPOpitResults:
             "<h2>Coefficient table</h2>",
             self.parameter_table.to_html(index=False),
         ]
+        if self.multistart_summary is not None:
+            sections.extend(
+                [
+                    "<h2>Multi-start summary</h2>",
+                    self.multistart_summary.to_html(index=False),
+                ]
+            )
+        if self.local_solutions is not None:
+            sections.extend(
+                [
+                    "<h2>Local solutions</h2>",
+                    self.local_solutions.to_html(index=False),
+                ]
+            )
         if self.marginal_effects is not None:
             sections.extend(
                 ["<h2>Average marginal effects</h2>", self.marginal_effects.to_html(index=False)]

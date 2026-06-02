@@ -67,6 +67,8 @@ class RandomParametersOrderedProbit:
         maxiter: int = 1000,
         tolerance: float = 1e-4,
         optimizer: str = "bfgs",
+        multistart: int = 1,
+        multistart_random_seed: int | None = 12345,
         covariance: str = "bfgs",
         chunk_size: int | None = 10_000,
         workers: int = 1,
@@ -91,6 +93,8 @@ class RandomParametersOrderedProbit:
         self.maxiter = int(maxiter)
         self.tolerance = float(tolerance)
         self.optimizer = normalize_optimizer(optimizer)
+        self.multistart = int(multistart)
+        self.multistart_random_seed = multistart_random_seed
         self.covariance = covariance.lower()
         self.chunk_size = chunk_size
         self.workers = int(workers)
@@ -100,6 +104,8 @@ class RandomParametersOrderedProbit:
 
         if self.draws < 1:
             raise ValueError("draws must be at least 1.")
+        if self.multistart < 1:
+            raise ValueError("multistart must be at least 1.")
         if self.covariance not in {"bfgs", "hessian"}:
             raise ValueError("covariance must be 'bfgs' or 'hessian'.")
         if self.chunk_size is not None and self.chunk_size < 1:
@@ -136,6 +142,8 @@ class RandomParametersOrderedProbit:
             maxiter=spec.maxiter,
             tolerance=spec.tolerance,
             optimizer=spec.optimizer,
+            multistart=spec.multistart,
+            multistart_random_seed=spec.multistart_random_seed,
             covariance=spec.covariance,
             chunk_size=spec.chunk_size,
             workers=spec.workers,
@@ -296,14 +304,54 @@ class RandomParametersOrderedProbit:
 
         optimization_start = time.perf_counter()
         remaining_maxiter = max(self.maxiter - resume_iteration, 1)
-        diagnostics = estimate_mle(
-            objective,
+        effective_multistart = 1 if resume_checkpoint is not None else self.multistart
+        start_vectors = _multistart_vectors(
             start_params,
-            method=self.optimizer,
-            maxiter=remaining_maxiter,
-            tolerance=self.tolerance,
-            callback=checkpoint_callback,
-            initial_iteration=resume_iteration,
+            effective_multistart,
+            self.multistart_random_seed,
+        )
+        multistart_records: list[dict[str, Any]] = []
+        for start_id, candidate_start in enumerate(start_vectors, start=1):
+            logger.info(
+                "Optimizing start %s of %s with %s.",
+                start_id,
+                effective_multistart,
+                self.optimizer,
+            )
+            starting_log_likelihood = -objective(candidate_start)
+            start_diagnostics = estimate_mle(
+                objective,
+                candidate_start,
+                method=self.optimizer,
+                maxiter=remaining_maxiter,
+                tolerance=self.tolerance,
+                callback=checkpoint_callback if effective_multistart == 1 else None,
+                initial_iteration=resume_iteration if resume_checkpoint is not None else 0,
+            )
+            multistart_records.append(
+                {
+                    "start_id": start_id,
+                    "starting_log_likelihood": starting_log_likelihood,
+                    "diagnostics": start_diagnostics,
+                }
+            )
+
+        best_record = max(
+            multistart_records,
+            key=lambda item: item["diagnostics"].log_likelihood,
+        )
+        diagnostics = best_record["diagnostics"]
+        selected_start_id = int(best_record["start_id"])
+        multistart_summary = _multistart_summary_table(
+            multistart_records,
+            selected_start_id,
+            self.optimizer,
+        )
+        local_solutions = self._local_solutions_table(
+            multistart_records,
+            selected_start_id,
+            fixed_names,
+            categories,
         )
         timing["optimization_seconds"] = time.perf_counter() - optimization_start
         timing["objective_calls"] = objective_calls
@@ -311,7 +359,11 @@ class RandomParametersOrderedProbit:
         timing["average_objective_seconds"] = (
             objective_seconds / objective_calls if objective_calls else 0.0
         )
-        logger.info("Optimization finished: %s", diagnostics.message)
+        logger.info(
+            "Optimization finished from start %s: %s",
+            selected_start_id,
+            diagnostics.message,
+        )
         total_iterations = (
             resume_iteration + diagnostics.iterations
             if diagnostics.iterations is not None
@@ -411,6 +463,9 @@ class RandomParametersOrderedProbit:
             "draw_type": self.draw_type,
             "draws": int(self.draws if q else 1),
             "correlated_random_parameters": self.correlated_random_parameters,
+            "multistart_requested": self.multistart,
+            "multistart_completed": int(len(multistart_records)),
+            "selected_start_id": selected_start_id,
         }
         termination_report = optimizer_termination_report(
             diagnostics.converged,
@@ -429,6 +484,10 @@ class RandomParametersOrderedProbit:
             "convergence_message": diagnostics.message,
             "iterations": total_iterations,
             "iterations_this_run": diagnostics.iterations,
+            "multistart_total_iterations": _sum_optional_ints(
+                record["diagnostics"].iterations for record in multistart_records
+            ),
+            "selected_start_id": selected_start_id,
             "resumed_from_iteration": resume_iteration,
             "function_evaluations": diagnostics.function_evaluations,
             "gradient_norm": diagnostics.gradient_norm,
@@ -451,6 +510,8 @@ class RandomParametersOrderedProbit:
             parameter_table=parameter_table,
             fit_statistics=fit_statistics,
             convergence=convergence,
+            multistart_summary=multistart_summary,
+            local_solutions=local_solutions,
             predicted_probabilities=probabilities,
             marginal_effects=effects,
             run_dir=run_dir,
@@ -493,6 +554,8 @@ class RandomParametersOrderedProbit:
                 "maxiter": self.maxiter,
                 "tolerance": self.tolerance,
                 "optimizer": self.optimizer,
+                "multistart": self.multistart,
+                "random_seed": self.multistart_random_seed,
                 "covariance": self.covariance,
                 "chunk_size": self.chunk_size,
                 "workers": self.workers,
@@ -741,8 +804,92 @@ class RandomParametersOrderedProbit:
             jacobian[:, column] = (plus - minus) / (2.0 * steps[column])
         return jacobian
 
+    def _local_solutions_table(
+        self,
+        records: Sequence[dict[str, Any]],
+        selected_start_id: int,
+        fixed_names: Sequence[str],
+        categories: Sequence[Any],
+    ) -> pd.DataFrame:
+        rows: list[dict[str, Any]] = []
+        for record in records:
+            start_id = int(record["start_id"])
+            diagnostics = record["diagnostics"]
+            names, components, variables, estimates = self._natural_parameters(
+                diagnostics.params,
+                fixed_names,
+                categories,
+            )
+            for name, component, variable, estimate in zip(
+                names,
+                components,
+                variables,
+                estimates,
+            ):
+                rows.append(
+                    {
+                        "start_id": start_id,
+                        "is_best": start_id == selected_start_id,
+                        "final_log_likelihood": diagnostics.log_likelihood,
+                        "optimizer": diagnostics.method,
+                        "parameter": name,
+                        "component": component,
+                        "variable": variable,
+                        "estimate": float(estimate),
+                    }
+                )
+        return pd.DataFrame(rows)
+
 
 RPOpitModel = RandomParametersOrderedProbit
+
+
+def _multistart_vectors(
+    base: np.ndarray,
+    count: int,
+    seed: int | None,
+) -> list[np.ndarray]:
+    base = np.asarray(base, dtype=float)
+    starts = [base.copy()]
+    if count <= 1:
+        return starts
+    rng = np.random.default_rng(seed)
+    scale = 0.25 * np.maximum(np.abs(base), 1.0)
+    for _ in range(1, count):
+        starts.append(base + rng.normal(loc=0.0, scale=scale, size=base.size))
+    return starts
+
+
+def _multistart_summary_table(
+    records: Sequence[dict[str, Any]],
+    selected_start_id: int,
+    optimizer: str,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        start_id = int(record["start_id"])
+        diagnostics = record["diagnostics"]
+        rows.append(
+            {
+                "start_id": start_id,
+                "is_best": start_id == selected_start_id,
+                "optimizer": optimizer,
+                "starting_log_likelihood": float(record["starting_log_likelihood"]),
+                "final_log_likelihood": diagnostics.log_likelihood,
+                "converged": diagnostics.converged,
+                "status": diagnostics.status,
+                "message": diagnostics.message,
+                "iterations": diagnostics.iterations,
+                "function_evaluations": diagnostics.function_evaluations,
+                "gradient_norm": diagnostics.gradient_norm,
+                "hessian_condition_number": diagnostics.hessian_condition_number,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _sum_optional_ints(values: Iterable[int | None]) -> int:
+    return int(sum(0 if value is None else int(value) for value in values))
 
 
 def _coerce_random_specs(

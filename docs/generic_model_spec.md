@@ -42,6 +42,8 @@ model:
 
 estimation:
   optimizer: bfgs
+  multistart: 1
+  random_seed: 12345
 ```
 
 ## rpopit Ordered Probit Model
@@ -75,6 +77,8 @@ model:
 
 estimation:
   optimizer: bfgs
+  multistart: 1
+  random_seed: 12345
 ```
 
 ## Validation Rules
@@ -155,6 +159,10 @@ Supported `estimation.optimizer` values are:
 
 BFGS is the default when `optimizer` is omitted.
 
+Set `multistart` to an integer greater than 1 to run multiple local
+optimizations. The first start is the supplied/default vector; remaining starts
+are seeded perturbations around that vector using `random_seed`.
+
 The diagnostics include:
 
 - optimizer method
@@ -174,6 +182,13 @@ The termination reason is one of:
 - `other`
 
 Boolean columns also report whether the run terminated due to each named reason.
+
+When multi-start is enabled, RPNB and rpopit export:
+
+- `multistart_summary.csv`, with starting log-likelihood, final log-likelihood,
+  convergence status, optimizer, and best-start flag
+- `multistart_local_solutions.csv`, with natural parameter estimates for every
+  local solution
 
 Backward-compatible shorthand remains available for continuous-only models:
 

@@ -20,7 +20,12 @@ def test_parse_model_spec_accepts_offset_and_random_parameters():
                 "correlated_random_parameters": True,
             },
             "simulation": {"draws": 64, "draw_type": "sobol"},
-            "estimation": {"start_alpha": 0.7, "optimizer": "lbfgsb"},
+            "estimation": {
+                "start_alpha": 0.7,
+                "optimizer": "lbfgsb",
+                "multistart": 3,
+                "random_seed": 987,
+            },
         }
     )
 
@@ -32,6 +37,8 @@ def test_parse_model_spec_accepts_offset_and_random_parameters():
     assert spec.correlated_random_parameters
     assert spec.start_alpha == 0.7
     assert spec.optimizer == "lbfgsb"
+    assert spec.multistart == 3
+    assert spec.multistart_random_seed == 987
 
 
 def test_parse_model_spec_requires_offset():

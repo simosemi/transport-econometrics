@@ -19,6 +19,8 @@ class RPNBResults:
     fit_statistics: dict[str, Any]
     convergence: dict[str, Any]
     preprocessing_summary: pd.DataFrame | None = None
+    multistart_summary: pd.DataFrame | None = None
+    local_solutions: pd.DataFrame | None = None
     predictions: pd.DataFrame | None = None
     marginal_effects: pd.DataFrame | None = None
     run_dir: Path | None = None
@@ -78,6 +80,10 @@ class RPNBResults:
             paths["preprocessing_summary_csv"] = directory / "preprocessing_summary.csv"
             paths["preprocessing_summary_xlsx"] = directory / "preprocessing_summary.xlsx"
             paths["preprocessing_summary_html"] = directory / "preprocessing_summary.html"
+        if self.multistart_summary is not None:
+            paths["multistart_summary_csv"] = directory / "multistart_summary.csv"
+        if self.local_solutions is not None:
+            paths["local_solutions_csv"] = directory / "multistart_local_solutions.csv"
 
         self.parameter_table.to_csv(paths["coefficients_csv"], index=False)
         pd.DataFrame([self.fit_statistics]).to_csv(paths["fit_statistics_csv"], index=False)
@@ -96,6 +102,10 @@ class RPNBResults:
             paths["preprocessing_summary_html"].write_text(
                 self._preprocessing_to_html(), encoding="utf-8"
             )
+        if self.multistart_summary is not None:
+            self.multistart_summary.to_csv(paths["multistart_summary_csv"], index=False)
+        if self.local_solutions is not None:
+            self.local_solutions.to_csv(paths["local_solutions_csv"], index=False)
 
         if self.predictions is not None:
             paths["predictions_csv"] = directory / "predictions.csv"
@@ -116,6 +126,14 @@ class RPNBResults:
             if self.preprocessing_summary is not None:
                 self.preprocessing_summary.to_excel(
                     writer, sheet_name="preprocessing_summary", index=False
+                )
+            if self.multistart_summary is not None:
+                self.multistart_summary.to_excel(
+                    writer, sheet_name="multistart_summary", index=False
+                )
+            if self.local_solutions is not None:
+                self.local_solutions.to_excel(
+                    writer, sheet_name="local_solutions", index=False
                 )
             if self.predictions is not None:
                 self.predictions.to_excel(writer, sheet_name="predictions", index=False)
@@ -144,6 +162,20 @@ class RPNBResults:
                 [
                     "<h2>Preprocessing summary</h2>",
                     self.preprocessing_summary.to_html(index=False),
+                ]
+            )
+        if self.multistart_summary is not None:
+            sections.extend(
+                [
+                    "<h2>Multi-start summary</h2>",
+                    self.multistart_summary.to_html(index=False),
+                ]
+            )
+        if self.local_solutions is not None:
+            sections.extend(
+                [
+                    "<h2>Local solutions</h2>",
+                    self.local_solutions.to_html(index=False),
                 ]
             )
         if self.marginal_effects is not None:

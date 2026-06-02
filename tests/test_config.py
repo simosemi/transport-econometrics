@@ -16,13 +16,19 @@ def test_parse_random_parameter_mapping_list():
                     {"name": "z", "distribution": "normal", "start_mean": -0.2, "start_sd": 0.5}
                 ],
             },
-            "estimation": {"optimizer": "lbfgsb"},
+            "estimation": {
+                "optimizer": "lbfgsb",
+                "multistart": 3,
+                "random_seed": 987,
+            },
         }
     )
     assert spec.dependent == "severity"
     assert spec.random[0].name == "z"
     assert spec.random[0].start_sd == 0.5
     assert spec.optimizer == "lbfgsb"
+    assert spec.multistart == 3
+    assert spec.multistart_random_seed == 987
 
 
 def test_parse_generic_ordered_model_spec():

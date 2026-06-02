@@ -43,10 +43,15 @@ Optimizer choice is configured in the YAML spec:
 ```yaml
 estimation:
   optimizer: bfgs
+  multistart: 1
+  random_seed: 12345
 ```
 
 Supported values are `bfgs`, `lbfgsb`, `nelder-mead`, and `powell`. BFGS is the
 default.
+
+For difficult likelihood surfaces, increase `multistart` to run several seeded
+local optimizations and select the best final log-likelihood.
 
 Recommended checkpoint setting:
 
