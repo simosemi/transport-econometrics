@@ -14,6 +14,7 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 import pandas as pd
 import yaml
+from scipy.stats import chi2
 
 from rpnb.checkpoint import load_latest_checkpoint, save_checkpoint, write_run_metadata
 from rpnb.config import (
@@ -401,6 +402,10 @@ class RandomParametersNegativeBinomial:
             n_observations=len(work),
             tolerance=self.tolerance,
         )
+        local_optima_count = _count_distinct_local_optima(
+            multistart_summary["final_log_likelihood"].to_numpy()
+        )
+        multiple_local_optima_found = local_optima_count > 1
         local_solutions = self._local_solutions_table(
             multistart_records,
             selected_start_id,
@@ -453,9 +458,6 @@ class RandomParametersNegativeBinomial:
                 internal_covariance = covariance_from_hessian(hessian)
             except (FloatingPointError, ValueError, np.linalg.LinAlgError) as exc:
                 logger.warning("Falling back to BFGS covariance: %s", exc)
-        if process_pool is not None:
-            process_pool.shutdown()
-
         names, components, variables, estimates = self._natural_parameters(
             diagnostics.params, fixed_names
         )
@@ -467,6 +469,18 @@ class RandomParametersNegativeBinomial:
         parameter_table = build_parameter_table(
             names, components, variables, estimates, natural_covariance
         )
+        random_parameter_tests = self._random_parameter_lr_tests(
+            full_params=diagnostics.params,
+            full_log_likelihood=diagnostics.log_likelihood,
+            full_aic=2.0 * diagnostics.params.size - 2.0 * diagnostics.log_likelihood,
+            full_bic=np.log(len(work)) * diagnostics.params.size
+            - 2.0 * diagnostics.log_likelihood,
+            n_observations=len(work),
+            n_fixed=len(fixed_names),
+            objective=objective,
+        )
+        if process_pool is not None:
+            process_pool.shutdown()
 
         predictions = predicted_counts(
             final_state.fixed,
@@ -528,6 +542,8 @@ class RandomParametersNegativeBinomial:
             "multistart_requested": self.multistart,
             "multistart_completed": int(len(multistart_records)),
             "selected_start_id": selected_start_id,
+            "n_local_optima": int(local_optima_count),
+            "multiple_local_optima_found": bool(multiple_local_optima_found),
         }
         termination_report = optimizer_termination_report(
             diagnostics.converged,
@@ -581,6 +597,7 @@ class RandomParametersNegativeBinomial:
             preprocessing_summary=preprocessing_summary,
             multistart_summary=multistart_summary,
             local_solutions=local_solutions,
+            random_parameter_tests=random_parameter_tests,
             predictions=predictions,
             marginal_effects=effects,
             run_dir=run_dir,
@@ -1087,6 +1104,97 @@ class RandomParametersNegativeBinomial:
                 )
         return pd.DataFrame(rows)
 
+    def _random_parameter_lr_tests(
+        self,
+        full_params: np.ndarray,
+        full_log_likelihood: float,
+        full_aic: float,
+        full_bic: float,
+        n_observations: int,
+        n_fixed: int,
+        objective: Any,
+    ) -> pd.DataFrame:
+        q = len(self.random)
+        if q == 0:
+            return pd.DataFrame(
+                columns=[
+                    "parameter",
+                    "variable",
+                    "full_log_likelihood",
+                    "restricted_log_likelihood",
+                    "delta_log_likelihood",
+                    "lr_statistic",
+                    "p_value",
+                    "delta_AIC",
+                    "delta_BIC",
+                    "recommendation",
+                ]
+            )
+        if self.correlated_random_parameters:
+            return pd.DataFrame(
+                [
+                    {
+                        "parameter": f"beta_random_sd[{name}]",
+                        "variable": name,
+                        "full_log_likelihood": full_log_likelihood,
+                        "restricted_log_likelihood": np.nan,
+                        "delta_log_likelihood": np.nan,
+                        "lr_statistic": np.nan,
+                        "p_value": np.nan,
+                        "delta_AIC": np.nan,
+                        "delta_BIC": np.nan,
+                        "recommendation": "Not Tested - Correlated Random Parameters",
+                    }
+                    for name in self.random
+                ]
+            )
+
+        rows: list[dict[str, Any]] = []
+        full_params = np.asarray(full_params, dtype=float)
+        sd_start = n_fixed + q
+        for index, name in enumerate(self.random):
+            fixed_position = sd_start + index
+            free_start = np.delete(full_params, fixed_position)
+
+            def restricted_objective(free_params: np.ndarray) -> float:
+                theta = _insert_fixed_value(
+                    np.asarray(free_params, dtype=float),
+                    fixed_position,
+                    -50.0,
+                )
+                return objective(theta)
+
+            diagnostics = estimate_mle(
+                restricted_objective,
+                free_start,
+                method=self.optimizer,
+                maxiter=self.maxiter,
+                tolerance=self.tolerance,
+            )
+            restricted_ll = float(diagnostics.log_likelihood)
+            restricted_params = full_params.size - 1
+            restricted_aic = 2.0 * restricted_params - 2.0 * restricted_ll
+            restricted_bic = np.log(n_observations) * restricted_params - 2.0 * restricted_ll
+            delta_ll = float(full_log_likelihood - restricted_ll)
+            lr_stat = max(0.0, 2.0 * delta_ll)
+            p_value = float(chi2.sf(lr_stat, df=1))
+            recommendation = "Keep Random" if p_value < 0.05 else "Treat as Fixed"
+            rows.append(
+                {
+                    "parameter": f"beta_random_sd[{name}]",
+                    "variable": name,
+                    "full_log_likelihood": float(full_log_likelihood),
+                    "restricted_log_likelihood": restricted_ll,
+                    "delta_log_likelihood": delta_ll,
+                    "lr_statistic": lr_stat,
+                    "p_value": p_value,
+                    "delta_AIC": float(full_aic - restricted_aic),
+                    "delta_BIC": float(full_bic - restricted_bic),
+                    "recommendation": recommendation,
+                }
+            )
+        return pd.DataFrame(rows)
+
 
 RPNBModel = RandomParametersNegativeBinomial
 
@@ -1174,6 +1282,25 @@ def _multistart_summary_table(
 
 def _format_parameter_vector(params: np.ndarray) -> str:
     return json.dumps([float(value) for value in np.asarray(params, dtype=float)])
+
+
+def _insert_fixed_value(values: np.ndarray, index: int, fixed_value: float) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    return np.insert(values, index, float(fixed_value))
+
+
+def _count_distinct_local_optima(
+    log_likelihoods: np.ndarray,
+    tolerance: float = 1e-4,
+) -> int:
+    values = sorted(float(value) for value in np.asarray(log_likelihoods, dtype=float))
+    distinct: list[float] = []
+    for value in values:
+        if not np.isfinite(value):
+            continue
+        if not distinct or abs(value - distinct[-1]) > tolerance:
+            distinct.append(value)
+    return len(distinct)
 
 
 def _sum_optional_ints(values: Iterable[int | None]) -> int:

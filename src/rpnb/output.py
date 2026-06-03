@@ -21,6 +21,7 @@ class RPNBResults:
     preprocessing_summary: pd.DataFrame | None = None
     multistart_summary: pd.DataFrame | None = None
     local_solutions: pd.DataFrame | None = None
+    random_parameter_tests: pd.DataFrame | None = None
     predictions: pd.DataFrame | None = None
     marginal_effects: pd.DataFrame | None = None
     run_dir: Path | None = None
@@ -89,6 +90,8 @@ class RPNBResults:
             paths["multistart_summary_html"] = directory / "multistart_summary.html"
         if self.local_solutions is not None:
             paths["local_solutions_csv"] = directory / "multistart_local_solutions.csv"
+        if self.random_parameter_tests is not None:
+            paths["random_parameter_tests_csv"] = directory / "random_parameter_tests.csv"
 
         self.parameter_table.to_csv(paths["coefficients_csv"], index=False)
         pd.DataFrame([self.fit_statistics]).to_csv(paths["fit_statistics_csv"], index=False)
@@ -118,6 +121,10 @@ class RPNBResults:
             )
         if self.local_solutions is not None:
             self.local_solutions.to_csv(paths["local_solutions_csv"], index=False)
+        if self.random_parameter_tests is not None:
+            self.random_parameter_tests.to_csv(
+                paths["random_parameter_tests_csv"], index=False
+            )
 
         if self.predictions is not None:
             paths["predictions_csv"] = directory / "predictions.csv"
@@ -146,6 +153,10 @@ class RPNBResults:
             if self.local_solutions is not None:
                 self.local_solutions.to_excel(
                     writer, sheet_name="local_solutions", index=False
+                )
+            if self.random_parameter_tests is not None:
+                self.random_parameter_tests.to_excel(
+                    writer, sheet_name="random_parameter_tests", index=False
                 )
             if self.predictions is not None:
                 self.predictions.to_excel(writer, sheet_name="predictions", index=False)
@@ -191,6 +202,13 @@ class RPNBResults:
                 [
                     "<h2>Local solutions</h2>",
                     self.local_solutions.to_html(index=False),
+                ]
+            )
+        if self.random_parameter_tests is not None:
+            sections.extend(
+                [
+                    "<h2>Random parameter LR tests</h2>",
+                    self.random_parameter_tests.to_html(index=False),
                 ]
             )
         if self.marginal_effects is not None:

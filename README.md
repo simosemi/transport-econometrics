@@ -39,6 +39,10 @@ Cholesky factor and report natural standard deviations and correlations.
   reference categories, and generated dummy variables.
 - Alternative optimizers: `bfgs`, `lbfgsb`, `nelder-mead`, and `powell`.
 - Multi-start optimization with seeded perturbations around supplied start values.
+- Random-parameter likelihood-ratio tests for independent random parameters.
+- Run comparison reports that rank candidate RPNB models automatically.
+- NLOGIT audit report generation for checking likelihood, draws, offset, and
+  panel-likelihood assumptions.
 - Optimizer diagnostics, including convergence code/message, gradient norm,
   Hessian condition number, parameter magnitudes, and termination reason.
 - CSV, Excel, and HTML exports.
@@ -194,9 +198,13 @@ Each run creates a timestamped directory containing:
 - `preprocessing_summary.xlsx`
 - `preprocessing_summary.html`
 - `multistart_summary.csv`
+- `multistart_summary.xlsx`
+- `multistart_summary.html`
 - `multistart_local_solutions.csv`
+- `random_parameter_tests.csv`
 - `predictions.csv`
 - `marginal_effects.csv`
+- `nlogit_style_report.txt`
 - `rpnb_results.xlsx`
 - `rpnb_results.html`
 
@@ -211,8 +219,34 @@ and `powell`. BFGS remains the default.
 
 Set `estimation.multistart` above 1 to fit from multiple starting vectors. RPNB
 uses the supplied/default start vector first, then generates seeded perturbations
-around it using `estimation.random_seed`. The best final log-likelihood is used
-for the reported model, and all local solutions are exported.
+around it using `estimation.multistart_seed` and `estimation.multistart_scale`.
+The best final log-likelihood is used for the reported model, all local
+solutions are exported, and fit statistics report whether multiple distinct
+local optima were found.
+
+For independent random parameters, RPNB also writes
+`random_parameter_tests.csv`. Each row fits a restricted model with that
+parameter's SD fixed near zero, reports the LR statistic and p-value, and
+recommends either `Keep Random` or `Treat as Fixed`.
+
+Compare completed RPNB runs with:
+
+```powershell
+python -m rpnb.compare_runs --runs run1 run2 run3 --out comparison_report
+```
+
+The comparison utility ranks models by AIC and reports LL, AIC, BIC, alpha,
+convergence quality, random-SD significance, and parameter counts.
+
+Generate an NLOGIT audit note with:
+
+```powershell
+python -m rpnb.audit_nlogit --out nlogit_audit_report.md
+```
+
+The audit documents RPNB's NB2 likelihood, alpha parameterization, simulation
+draws, random categorical handling, offset convention, and panel likelihood,
+plus differences to verify when matching NLOGIT.
 
 ## Python Use
 

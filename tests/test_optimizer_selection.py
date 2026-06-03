@@ -5,6 +5,7 @@ import pytest
 from rpopit.model import RandomParametersOrderedProbit
 from rpopit.simulation import simulate_ordered_probit_data
 from rpnb.compare_runs import compare_runs, main as compare_runs_main
+from rpnb.audit_nlogit import main as audit_nlogit_main
 from rpnb.model import RandomParametersNegativeBinomial
 from rpnb.simulation import simulate_negative_binomial_data
 
@@ -121,6 +122,7 @@ def test_rpnb_multistart_exports_summary_and_local_solutions(tmp_path):
     assert (results.run_dir / "multistart_summary.xlsx").exists()
     assert (results.run_dir / "multistart_summary.html").exists()
     assert (results.run_dir / "multistart_local_solutions.csv").exists()
+    assert (results.run_dir / "random_parameter_tests.csv").exists()
     assert (results.run_dir / "nlogit_style_report.txt").exists()
 
     exported_summary = pd.read_csv(results.run_dir / "multistart_summary.csv")
@@ -129,6 +131,8 @@ def test_rpnb_multistart_exports_summary_and_local_solutions(tmp_path):
     assert len(exported_summary) == 3
     assert len(exported_summary_xlsx) == 3
     assert set(exported_solutions["start_id"]) == {1, 2, 3}
+    assert "multiple_local_optima_found" in results.fit_statistics
+    assert "n_local_optima" in results.fit_statistics
     report_text = (results.run_dir / "nlogit_style_report.txt").read_text(encoding="utf-8")
     assert "RPNB NLOGIT-STYLE REPORT" in report_text
     assert "RANDOM PARAMETER MEANS" in report_text
@@ -223,6 +227,9 @@ def test_rpnb_compare_runs_exports_report(tmp_path):
     assert paths["metrics_csv"].exists()
     assert paths["excel"].exists()
     assert paths["html"].exists()
+    assert "model_rank" in report.metrics.columns
+    assert "random_sd_significance" in report.metrics.columns
+    assert report.metrics["model_rank"].min() == 1
 
     cli_out = tmp_path / "comparison_report_cli"
     status = compare_runs_main(
@@ -235,6 +242,28 @@ def test_rpnb_compare_runs_exports_report(tmp_path):
     )
     assert status == 0
     assert (cli_out / "comparison_metrics.csv").exists()
+    assert (run_dirs[0] / "random_parameter_tests.csv").exists()
+    random_tests = pd.read_csv(run_dirs[0] / "random_parameter_tests.csv")
+    assert {
+        "parameter",
+        "lr_statistic",
+        "p_value",
+        "recommendation",
+    }.issubset(random_tests.columns)
+    assert set(random_tests["recommendation"]).issubset({"Keep Random", "Treat as Fixed"})
+
+
+def test_rpnb_audit_nlogit_writes_markdown_report(tmp_path):
+    out_path = tmp_path / "nlogit_audit_report.md"
+
+    status = audit_nlogit_main(["--out", str(out_path)])
+
+    assert status == 0
+    text = out_path.read_text(encoding="utf-8")
+    assert "Likelihood Formulation" in text
+    assert "Random Categorical Variables" in text
+    assert "Offset Handling" in text
+    assert "Panel Likelihood" in text
 
 
 def _assert_common_estimates_close(left, right, atol: float = 2e-3) -> None:

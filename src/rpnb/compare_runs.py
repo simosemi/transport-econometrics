@@ -77,7 +77,9 @@ def compare_runs(run_dirs: Sequence[str | Path]) -> RPNBRunComparison:
         fit_statistics = _read_single_row(run_path / "fit_statistics.csv")
         convergence = _read_optional_single_row(run_path / "convergence.csv")
         coefficients = _read_coefficients(run_path / "coefficients.csv")
+        random_tests = _read_optional_frame(run_path / "random_parameter_tests.csv")
         run_label = run_path.name
+        random_sd_summary = _random_sd_significance(coefficients, random_tests)
 
         metric_rows.append(
             {
@@ -88,6 +90,7 @@ def compare_runs(run_dirs: Sequence[str | Path]) -> RPNBRunComparison:
                 "BIC": _get(fit_statistics, "BIC"),
                 "alpha": _alpha(fit_statistics, coefficients),
                 "convergence_quality": _get(convergence, "convergence_quality"),
+                **random_sd_summary,
                 "n_parameters": _get(fit_statistics, "n_parameters"),
             }
         )
@@ -99,7 +102,7 @@ def compare_runs(run_dirs: Sequence[str | Path]) -> RPNBRunComparison:
         )
 
     return RPNBRunComparison(
-        metrics=pd.DataFrame(metric_rows),
+        metrics=_rank_metrics(pd.DataFrame(metric_rows)),
         random_parameter_means=pd.DataFrame(random_mean_rows),
         random_parameter_sds=pd.DataFrame(random_sd_rows),
     )
@@ -155,6 +158,12 @@ def _read_coefficients(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def _read_optional_frame(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
 def _parameter_rows(
     run_label: str,
     run_path: Path,
@@ -174,6 +183,7 @@ def _parameter_rows(
                 "std_error": row.get("std_error"),
                 "z_value": row.get("z_value"),
                 "p_value": row.get("p_value"),
+                "significance": row.get("significance"),
             }
         )
     return rows
@@ -192,6 +202,61 @@ def _get(mapping: dict[str, Any], key: str) -> Any:
     if pd.isna(value):
         return None
     return value
+
+
+def _random_sd_significance(
+    coefficients: pd.DataFrame,
+    random_tests: pd.DataFrame,
+) -> dict[str, Any]:
+    sd_rows = coefficients.loc[coefficients["component"] == "random_sd"]
+    p_values = (
+        pd.to_numeric(sd_rows.get("p_value", pd.Series(dtype=float)), errors="coerce")
+        if not sd_rows.empty
+        else pd.Series(dtype=float)
+    )
+    significant = p_values < 0.05
+    summary: dict[str, Any] = {
+        "n_random_sds": int(len(sd_rows)),
+        "n_significant_random_sds": int(significant.sum()),
+        "min_random_sd_p_value": None
+        if p_values.dropna().empty
+        else float(p_values.min(skipna=True)),
+        "random_sd_significance": (
+            "At least one significant"
+            if bool(significant.any())
+            else ("None significant" if len(sd_rows) else "No random SDs")
+        ),
+    }
+    if not random_tests.empty and "recommendation" in random_tests.columns:
+        keep_random = random_tests["recommendation"].astype(str).eq("Keep Random")
+        summary["n_lr_keep_random"] = int(keep_random.sum())
+        summary["n_lr_treat_fixed"] = int(
+            random_tests["recommendation"].astype(str).eq("Treat as Fixed").sum()
+        )
+    else:
+        summary["n_lr_keep_random"] = None
+        summary["n_lr_treat_fixed"] = None
+    return summary
+
+
+def _rank_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
+    if metrics.empty:
+        return metrics
+    ranked = metrics.copy()
+    ranked["model_rank"] = pd.to_numeric(ranked["AIC"], errors="coerce").rank(
+        method="min",
+        ascending=True,
+    )
+    ranked["LL_rank"] = pd.to_numeric(ranked["LL"], errors="coerce").rank(
+        method="min",
+        ascending=False,
+    )
+    ranked["BIC_rank"] = pd.to_numeric(ranked["BIC"], errors="coerce").rank(
+        method="min",
+        ascending=True,
+    )
+    ranked["best_model_by_AIC"] = ranked["model_rank"].eq(1)
+    return ranked.sort_values(["model_rank", "run"], kind="stable").reset_index(drop=True)
 
 
 if __name__ == "__main__":

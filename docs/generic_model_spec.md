@@ -282,9 +282,21 @@ When multi-start is enabled, RPNB and rpopit export:
   norm, optimizer, best-start flag, and starting/final parameter vectors
 - `multistart_local_solutions.csv`, with natural parameter estimates for every
   local solution
+- RPNB fit statistics additionally report `n_local_optima` and
+  `multiple_local_optima_found`, based on distinct final log-likelihood values
+  across starts
 - `nlogit_style_report.txt`, a plain-text report with NLOGIT-style model
   metrics, random parameter mean and SD sections, dispersion section when
   applicable, and significance stars
+
+For independent RPNB random parameters, `random_parameter_tests.csv` is also
+exported. For each random parameter, RPNB fits a restricted model with that
+parameter's SD fixed near zero and reports:
+
+- full and restricted log-likelihood
+- LR statistic and p-value
+- delta LL, delta AIC, and delta BIC
+- recommendation: `Keep Random` or `Treat as Fixed`
 
 RPNB run directories can be compared after estimation with:
 
@@ -293,8 +305,20 @@ python -m rpnb.compare_runs --runs run1 run2 run3 --out comparison_report
 ```
 
 The comparison report exports CSV, Excel, and HTML files for LL, AIC, BIC,
-alpha, convergence quality, parameter count, random parameter means, and random
-parameter SDs.
+alpha, convergence quality, random-SD significance, parameter count, random
+parameter means, and random parameter SDs. Models are ranked automatically by
+AIC, with LL and BIC ranks also included.
+
+RPNB can also generate an NLOGIT audit note:
+
+```powershell
+python -m rpnb.audit_nlogit --out nlogit_audit_report.md
+```
+
+The audit covers the NB2 likelihood formulation, alpha parameterization, random
+coefficient generation, Halton draws, random categorical variables, offset
+handling, panel likelihood, and differences to check when validating against
+NLOGIT.
 
 Backward-compatible shorthand remains available for continuous-only models:
 
