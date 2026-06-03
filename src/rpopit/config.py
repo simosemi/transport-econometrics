@@ -57,6 +57,25 @@ class RandomCategoricalVariableSpec:
 
 
 @dataclass(frozen=True)
+class DerivedCategoricalBinSpec:
+    """One derived-category bin definition."""
+
+    label: str
+    upper: float | None = None
+
+
+@dataclass(frozen=True)
+class DerivedCategoricalSpec:
+    """Configuration for a categorical variable derived from a numeric column."""
+
+    name: str
+    source: str
+    method: str = "bins"
+    bins: tuple[DerivedCategoricalBinSpec, ...] = ()
+    quantile_bins: int | None = None
+
+
+@dataclass(frozen=True)
 class ModelSpec:
     """Complete model, simulation, estimation, and output specification."""
 
@@ -65,6 +84,7 @@ class ModelSpec:
     fixed_categorical: tuple[CategoricalVariableSpec, ...] = ()
     random: tuple[RandomParameterSpec, ...] = ()
     random_categorical: tuple[RandomCategoricalVariableSpec, ...] = ()
+    derived_categorical: tuple[DerivedCategoricalSpec, ...] = ()
     group_id: str | None = None
     categories: tuple[Any, ...] | None = None
     draws: int = 200
@@ -91,6 +111,7 @@ class ModelSpec:
         data["random_categorical"] = [
             asdict(item) for item in self.random_categorical
         ]
+        data["derived_categorical"] = [asdict(item) for item in self.derived_categorical]
         return data
 
 
@@ -130,6 +151,9 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
     random_categorical_specs = _parse_random_categorical_variables(
         random_categorical_raw,
         distributions,
+    )
+    derived_categorical_specs = _parse_derived_categorical_variables(
+        model.get("derived_categorical", {})
     )
 
     group_id = _first_present(model, "group_id", "panel_id", "panel", "group", default=None)
@@ -221,6 +245,7 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
         fixed_categorical=fixed_categorical,
         random=tuple(random_specs),
         random_categorical=tuple(random_categorical_specs),
+        derived_categorical=tuple(derived_categorical_specs),
         group_id=None if group_id is None else str(group_id),
         categories=None if categories is None else tuple(categories),
         draws=draws,
@@ -397,6 +422,75 @@ def _parse_random_categorical_variables(
             )
         )
     return specs
+
+
+def _parse_derived_categorical_variables(derived_raw: Any) -> list[DerivedCategoricalSpec]:
+    if derived_raw is None:
+        return []
+    if not isinstance(derived_raw, dict):
+        raise ValueError("derived_categorical must be a mapping.")
+    specs: list[DerivedCategoricalSpec] = []
+    for name, config in derived_raw.items():
+        if not isinstance(config, dict):
+            raise ValueError(f"Derived categorical variable {name!r} must be a mapping.")
+        source = config.get("source")
+        if source is None:
+            raise ValueError(f"Derived categorical variable {name!r} requires a source.")
+        method = str(config.get("method", "bins")).lower()
+        if method == "quantile":
+            bins = int(config.get("bins", 0))
+            if bins < 2:
+                raise ValueError(f"Derived quantile variable {name!r} requires bins >= 2.")
+            specs.append(
+                DerivedCategoricalSpec(
+                    name=str(name),
+                    source=str(source),
+                    method="quantile",
+                    quantile_bins=bins,
+                )
+            )
+            continue
+        if method not in {"bins", "cut"}:
+            raise ValueError(f"Unsupported derived categorical method for {name!r}: {method!r}.")
+        bins_raw = config.get("bins")
+        if not isinstance(bins_raw, list) or not bins_raw:
+            raise ValueError(f"Derived categorical variable {name!r} requires non-empty bins.")
+        bins = _parse_derived_bins(name, bins_raw)
+        specs.append(
+            DerivedCategoricalSpec(
+                name=str(name),
+                source=str(source),
+                method="bins",
+                bins=tuple(bins),
+            )
+        )
+    return specs
+
+
+def _parse_derived_bins(
+    variable: str, bins_raw: list[Any]
+) -> list[DerivedCategoricalBinSpec]:
+    bins: list[DerivedCategoricalBinSpec] = []
+    previous_upper: float | None = None
+    open_ended_seen = False
+    for index, item in enumerate(bins_raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"Derived bin {index + 1} for {variable!r} must be a mapping.")
+        if "label" not in item:
+            raise ValueError(f"Derived bin {index + 1} for {variable!r} requires a label.")
+        if open_ended_seen:
+            raise ValueError(f"Open-ended derived bin for {variable!r} must be last.")
+        upper = item.get("upper")
+        if upper is None:
+            open_ended_seen = True
+            bins.append(DerivedCategoricalBinSpec(label=str(item["label"]), upper=None))
+            continue
+        upper_value = float(upper)
+        if previous_upper is not None and upper_value <= previous_upper:
+            raise ValueError(f"Derived bins for {variable!r} must have increasing upper values.")
+        previous_upper = upper_value
+        bins.append(DerivedCategoricalBinSpec(label=str(item["label"]), upper=upper_value))
+    return bins
 
 
 def _validate_variable_roles(

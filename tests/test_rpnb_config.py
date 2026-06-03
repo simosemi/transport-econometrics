@@ -43,9 +43,14 @@ def test_parse_model_spec_accepts_offset_and_random_parameters():
     assert spec.multistart_scale == 0.5
 
 
-def test_parse_model_spec_requires_offset():
-    with pytest.raises(ValueError, match="offset"):
-        parse_model_spec({"model": {"dependent": "crashes"}})
+def test_parse_model_spec_allows_missing_and_null_offset():
+    missing = parse_model_spec({"model": {"dependent": "crashes"}})
+    explicit_null = parse_model_spec(
+        {"model": {"dependent": "crashes", "offset": None}}
+    )
+
+    assert missing.offset is None
+    assert explicit_null.offset is None
 
 
 def test_example_yaml_loads():
@@ -236,6 +241,156 @@ def test_generic_categorical_reference_must_exist():
 
     with pytest.raises(ValueError, match="Reference category"):
         model.fit(data, save_run=False)
+
+
+def test_model_without_offset_uses_zero_offset_and_does_not_require_offset_column():
+    data = _generic_fake_count_data().drop(columns=["log_exposure"])
+    model = RandomParametersNegativeBinomial(
+        dependent="crashes",
+        fixed=["speed_mean"],
+        random=[],
+        maxiter=2,
+        checkpoint_interval=0,
+    )
+
+    results = model.fit(data, save_run=False)
+
+    assert results.fit_statistics["offset"] is None
+    assert not results.fit_statistics["offset_used"]
+    assert "log_exposure" not in results.fit_statistics["missing_checked_columns"]
+    assert "log_exposure" not in results.predictions.columns
+
+
+def test_offset_null_allows_log_exposure_as_random_parameter():
+    data = _generic_fake_count_data()
+    spec = parse_model_spec(
+        {
+            "model": {
+                "dependent": "crashes",
+                "offset": None,
+                "fixed": {"continuous": ["speed_mean"]},
+                "random": {
+                    "continuous": {
+                        "log_exposure": {
+                            "distribution": "normal",
+                            "start_mean": 0.0,
+                            "start_sd": 0.2,
+                        }
+                    }
+                },
+                "group_id": "UniqueID",
+            },
+            "simulation": {"draws": 4},
+            "estimation": {"maxiter": 1},
+        }
+    )
+    model = RandomParametersNegativeBinomial.from_spec(spec)
+
+    results = model.fit(data, save_run=False)
+    parameters = set(results.parameter_table["parameter"])
+
+    assert results.fit_statistics["offset"] is None
+    assert "beta_random_mean[log_exposure]" in parameters
+    assert "beta_random_sd[log_exposure]" in parameters
+
+
+def test_derived_categorical_fixed_and_random_parameters_are_materialized():
+    data = _generic_fake_count_data()
+    original = data.copy(deep=True)
+    spec = parse_model_spec(
+        {
+            "model": {
+                "dependent": "crashes",
+                "offset": "log_exposure",
+                "derived_categorical": {
+                    "speed_std_cat": {
+                        "source": "speed_std",
+                        "bins": [
+                            {"upper": 5, "label": "<5"},
+                            {"upper": 7, "label": "5-7"},
+                            {"label": ">=7"},
+                        ],
+                    }
+                },
+                "fixed": {
+                    "continuous": ["speed_mean"],
+                    "categorical": {"speed_std_cat": {"reference": "<5"}},
+                },
+                "random": {
+                    "categorical": {
+                        "Interstate": {
+                            "reference": 1,
+                            "distribution": "normal",
+                            "start_mean": 0.0,
+                            "start_sd": 0.2,
+                        }
+                    }
+                },
+                "group_id": "UniqueID",
+            },
+            "simulation": {"draws": 4},
+            "estimation": {"maxiter": 1},
+        }
+    )
+    model = RandomParametersNegativeBinomial.from_spec(spec)
+
+    results = model.fit(data, save_run=False)
+    parameters = set(results.parameter_table["parameter"])
+
+    assert "beta_fixed[speed_std_cat_<5]" not in parameters
+    assert "beta_fixed[speed_std_cat_5_7]" in parameters
+    assert "beta_fixed[speed_std_cat___7]" in parameters
+    assert "beta_random_mean[Interstate_0]" in parameters
+    assert results.model_spec["model"]["derived_categorical"]["speed_std_cat"]["source"] == (
+        "speed_std"
+    )
+    summary = results.preprocessing_summary
+    derived_row = summary.loc[
+        (summary["section"] == "variable_summary")
+        & (summary["variable_name"] == "speed_std_cat")
+    ].iloc[0]
+    assert derived_row["derived_source"] == "speed_std"
+    assert derived_row["derived_method"] == "bins"
+    assert ">=7:open" in derived_row["derived_bins"]
+    assert not summary.loc[
+        (summary["section"] == "categorical_frequency")
+        & (summary["variable_name"] == "speed_std_cat")
+    ].empty
+    pd.testing.assert_frame_equal(data, original)
+
+
+def test_derived_quantile_categorical_creates_q_labels():
+    data = _generic_fake_count_data()
+    model = RandomParametersNegativeBinomial(
+        dependent="crashes",
+        offset="log_exposure",
+        fixed_categorical=[{"speed_std_quartile": {"reference": "Q1"}}],
+        derived_categorical=[
+            {
+                "speed_std_quartile": {
+                    "source": "speed_std",
+                    "method": "quantile",
+                    "bins": 4,
+                }
+            }
+        ],
+        random=[],
+        maxiter=1,
+        checkpoint_interval=0,
+    )
+
+    results = model.fit(data, save_run=False)
+    parameters = set(results.parameter_table["parameter"])
+
+    assert "beta_fixed[speed_std_quartile_Q1]" not in parameters
+    assert {"beta_fixed[speed_std_quartile_Q2]", "beta_fixed[speed_std_quartile_Q3]"}.issubset(
+        parameters
+    )
+    quartile_frequency = results.preprocessing_summary.loc[
+        (results.preprocessing_summary["section"] == "categorical_frequency")
+        & (results.preprocessing_summary["variable_name"] == "speed_std_quartile")
+    ]
+    assert set(quartile_frequency["category_value"]) == {"Q1", "Q2", "Q3", "Q4"}
 
 
 def test_missing_drop_checks_random_only_continuous_and_categorical_variables():

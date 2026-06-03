@@ -18,6 +18,8 @@ import yaml
 from rpnb.checkpoint import load_latest_checkpoint, save_checkpoint, write_run_metadata
 from rpnb.config import (
     CategoricalVariableSpec,
+    DerivedCategoricalBinSpec,
+    DerivedCategoricalSpec,
     ModelSpec,
     RandomCategoricalVariableSpec,
     RandomParameterSpec,
@@ -61,13 +63,14 @@ class RandomParametersNegativeBinomial:
     def __init__(
         self,
         dependent: str,
-        offset: str,
+        offset: str | None = None,
         fixed: Sequence[str] | None = None,
         fixed_categorical: Sequence[CategoricalVariableSpec | dict[str, Any]] | None = None,
         random: Sequence[str | RandomParameterSpec | dict[str, Any]] | None = None,
         random_categorical: Sequence[
             RandomCategoricalVariableSpec | dict[str, Any]
         ] | None = None,
+        derived_categorical: Sequence[DerivedCategoricalSpec | dict[str, Any]] | None = None,
         group_id: str | None = None,
         intercept: bool = True,
         draws: int = 200,
@@ -89,7 +92,7 @@ class RandomParametersNegativeBinomial:
         missing: str = "drop",
     ) -> None:
         self.dependent = dependent
-        self.offset = offset
+        self.offset = None if offset is None else str(offset)
         self.fixed = tuple(fixed or ())
         self.fixed_categorical_specs = tuple(
             _coerce_categorical_specs(fixed_categorical or ())
@@ -101,6 +104,13 @@ class RandomParametersNegativeBinomial:
             _coerce_random_categorical_specs(random_categorical or ())
         )
         self.random_categorical = tuple(item.name for item in self.random_categorical_specs)
+        self.derived_categorical_specs = tuple(
+            _coerce_derived_categorical_specs(derived_categorical or ())
+        )
+        self.derived_categorical = tuple(item.name for item in self.derived_categorical_specs)
+        self.derived_source_columns = tuple(
+            dict.fromkeys(item.source for item in self.derived_categorical_specs)
+        )
         self.random_specs = self.random_continuous_specs
         self.random = tuple(item.name for item in self.random_specs)
         self.group_id = group_id
@@ -164,6 +174,7 @@ class RandomParametersNegativeBinomial:
             fixed_categorical=spec.fixed_categorical,
             random=spec.random,
             random_categorical=spec.random_categorical,
+            derived_categorical=spec.derived_categorical,
             group_id=spec.group_id,
             intercept=spec.intercept,
             draws=spec.draws,
@@ -225,7 +236,7 @@ class RandomParametersNegativeBinomial:
         work, missing_report = self._prepare_frame(frame, logger)
         preprocessing_summary = self._preprocessing_summary(frame, work)
         y = _count_array(work[self.dependent])
-        offset = work[self.offset].astype(float).to_numpy()
+        offset = self._offset_array(work)
         x_fixed, fixed_names = self._fixed_design(work)
         x_random, random_names, random_specs = self._random_design(work)
         self.random = random_names
@@ -471,9 +482,12 @@ class RandomParametersNegativeBinomial:
         )
         predictions.insert(0, "row_index", work.index.to_numpy())
         predictions.insert(1, self.dependent, y)
-        predictions.insert(2, self.offset, offset)
-        predictions.insert(3, "_group_code", group_codes)
-        predictions.insert(4, "_group_label", group_labels[group_codes])
+        insert_at = 2
+        if self.offset is not None:
+            predictions.insert(insert_at, self.offset, offset)
+            insert_at += 1
+        predictions.insert(insert_at, "_group_code", group_codes)
+        predictions.insert(insert_at + 1, "_group_label", group_labels[group_codes])
 
         effects = average_marginal_effects(
             final_state.fixed,
@@ -494,6 +508,7 @@ class RandomParametersNegativeBinomial:
         fit_statistics = {
             "dependent": self.dependent,
             "offset": self.offset,
+            "offset_used": self.offset is not None,
             "missing_policy": self.missing,
             "missing_checked_columns": ",".join(missing_report.checked_columns),
             "n_rows_original": int(missing_report.original_rows),
@@ -583,6 +598,9 @@ class RandomParametersNegativeBinomial:
             "model": {
                 "dependent": self.dependent,
                 "offset": self.offset,
+                "derived_categorical": _derived_spec_for_output(
+                    self.derived_categorical_specs
+                ),
                 "fixed": _fixed_spec_for_output(
                     self.fixed,
                     self.fixed_categorical_specs,
@@ -621,11 +639,27 @@ class RandomParametersNegativeBinomial:
     def _model_columns(self) -> tuple[str, ...]:
         columns = [
             self.dependent,
-            self.offset,
+            *(() if self.offset is None else (self.offset,)),
             *self.fixed,
             *self.fixed_categorical,
             *self.random_continuous,
             *self.random_categorical,
+            *self.derived_source_columns,
+        ]
+        if self.group_id is not None:
+            columns.append(self.group_id)
+        return tuple(dict.fromkeys(columns))
+
+    def _raw_model_columns(self) -> tuple[str, ...]:
+        derived_names = set(self.derived_categorical)
+        columns = [
+            self.dependent,
+            *(() if self.offset is None else (self.offset,)),
+            *self.fixed,
+            *(name for name in self.fixed_categorical if name not in derived_names),
+            *self.random_continuous,
+            *(name for name in self.random_categorical if name not in derived_names),
+            *self.derived_source_columns,
         ]
         if self.group_id is not None:
             columns.append(self.group_id)
@@ -634,12 +668,15 @@ class RandomParametersNegativeBinomial:
     def _column_roles(self) -> dict[str, str]:
         roles = {
             self.dependent: "dependent",
-            self.offset: "offset",
         }
+        if self.offset is not None:
+            roles[self.offset] = "offset"
         roles.update({column: "fixed_continuous" for column in self.fixed})
         roles.update({column: "fixed_categorical" for column in self.fixed_categorical})
         roles.update({column: "random_continuous" for column in self.random_continuous})
         roles.update({column: "random_categorical" for column in self.random_categorical})
+        for column in self.derived_source_columns:
+            roles.setdefault(column, "derived_source")
         if self.group_id is not None:
             roles[self.group_id] = "group_id"
         return roles
@@ -653,19 +690,35 @@ class RandomParametersNegativeBinomial:
             **{spec.name: spec for spec in self.fixed_categorical_specs},
             **{spec.name: spec for spec in self.random_categorical_specs},
         }
+        derived_specs = {spec.name: spec for spec in self.derived_categorical_specs}
         numeric_roles = {
             "dependent",
             "offset",
             "fixed_continuous",
             "random_continuous",
+            "derived_source",
         }
 
         for column in self._model_columns():
             role = roles[column]
             numeric_expected = role in numeric_roles
-            raw_series = raw_frame[column]
             work_series = work[column]
-            missing_count = int(_invalid_column_mask(raw_series, numeric_expected).sum())
+            derived_spec = derived_specs.get(column)
+            if derived_spec is None:
+                raw_series = raw_frame[column]
+                missing_numeric_expected = numeric_expected
+                derived_source = ""
+                derived_method = ""
+                derived_bins = ""
+            else:
+                raw_series = raw_frame[derived_spec.source]
+                missing_numeric_expected = True
+                derived_source = derived_spec.source
+                derived_method = derived_spec.method
+                derived_bins = _format_derived_bins(derived_spec)
+            missing_count = int(
+                _invalid_column_mask(raw_series, missing_numeric_expected).sum()
+            )
             reference = ""
             dummy_names: list[str] = []
 
@@ -686,6 +739,9 @@ class RandomParametersNegativeBinomial:
                 missing_count=missing_count,
                 reference=reference,
                 dummy_names=dummy_names,
+                derived_source=derived_source,
+                derived_method=derived_method,
+                derived_bins=derived_bins,
             )
             rows.append(row)
 
@@ -699,6 +755,9 @@ class RandomParametersNegativeBinomial:
                         reference=spec.reference,
                         dummy_names=dummy_names,
                         missing_count=missing_count,
+                        derived_source=derived_source,
+                        derived_method=derived_method,
+                        derived_bins=derived_bins,
                     )
                 )
 
@@ -707,7 +766,7 @@ class RandomParametersNegativeBinomial:
     def _prepare_frame(
         self, frame: pd.DataFrame, logger: logging.Logger
     ) -> tuple[pd.DataFrame, MissingDataReport]:
-        columns = list(self._model_columns())
+        columns = list(self._raw_model_columns())
         missing_columns = [column for column in columns if column not in frame.columns]
         if missing_columns:
             raise ValueError(f"Data are missing required columns: {missing_columns}")
@@ -718,9 +777,10 @@ class RandomParametersNegativeBinomial:
             columns,
             numeric_columns=[
                 self.dependent,
-                self.offset,
+                *(() if self.offset is None else (self.offset,)),
                 *self.fixed,
                 *self.random_continuous,
+                *self.derived_source_columns,
             ],
         )
         invalid_count = int(invalid_mask.sum())
@@ -743,7 +803,12 @@ class RandomParametersNegativeBinomial:
         )
 
         _validate_count_series(work[self.dependent])
-        numeric_columns = [self.offset, *self.fixed, *self.random_continuous]
+        numeric_columns = [
+            *(() if self.offset is None else (self.offset,)),
+            *self.fixed,
+            *self.random_continuous,
+            *self.derived_source_columns,
+        ]
         for column in numeric_columns:
             values = pd.to_numeric(work[column], errors="coerce")
             if values.isna().any():
@@ -751,6 +816,7 @@ class RandomParametersNegativeBinomial:
             if not np.isfinite(values.to_numpy(dtype=float)).all():
                 raise ValueError(f"Column {column!r} contains non-finite values.")
             work[column] = values
+        self._materialize_derived_categorical(work)
         for spec in self.fixed_categorical_specs:
             if not _series_contains_value(work[spec.name], spec.reference):
                 raise ValueError(
@@ -762,6 +828,18 @@ class RandomParametersNegativeBinomial:
                     f"Reference category {spec.reference!r} was not found in {spec.name!r}."
                 )
         return work, report
+
+    def _offset_array(self, work: pd.DataFrame) -> np.ndarray:
+        if self.offset is None:
+            return np.zeros(len(work), dtype=float)
+        return work[self.offset].astype(float).to_numpy()
+
+    def _materialize_derived_categorical(self, work: pd.DataFrame) -> None:
+        for spec in self.derived_categorical_specs:
+            values = pd.to_numeric(work[spec.source], errors="coerce")
+            if values.isna().any():
+                raise ValueError(f"Derived categorical source {spec.source!r} contains non-numeric values.")
+            work[spec.name] = _derive_categorical_series(values, spec)
 
     def _fixed_design(self, work: pd.DataFrame) -> tuple[np.ndarray, tuple[str, ...]]:
         pieces: list[np.ndarray] = []
@@ -1017,6 +1095,9 @@ _PREPROCESSING_SUMMARY_COLUMNS = [
     "variable_name",
     "role",
     "section",
+    "derived_source",
+    "derived_method",
+    "derived_bins",
     "mean",
     "standard_deviation",
     "minimum",
@@ -1107,6 +1188,9 @@ def _variable_summary_row(
     missing_count: int,
     reference: str,
     dummy_names: Sequence[str],
+    derived_source: str = "",
+    derived_method: str = "",
+    derived_bins: str = "",
 ) -> dict[str, Any]:
     mean, std, minimum, maximum = _numeric_summary(series) if numeric_expected else (
         np.nan,
@@ -1118,6 +1202,9 @@ def _variable_summary_row(
         "variable_name": column,
         "role": role,
         "section": "variable_summary",
+        "derived_source": derived_source,
+        "derived_method": derived_method,
+        "derived_bins": derived_bins,
         "mean": mean,
         "standard_deviation": std,
         "minimum": minimum,
@@ -1139,6 +1226,9 @@ def _categorical_frequency_rows(
     reference: Any,
     dummy_names: Sequence[str],
     missing_count: int,
+    derived_source: str = "",
+    derived_method: str = "",
+    derived_bins: str = "",
 ) -> list[dict[str, Any]]:
     valid = _nonmissing_series(series, numeric_expected=False)
     categories = _ordered_categories(valid)
@@ -1153,6 +1243,9 @@ def _categorical_frequency_rows(
                 "variable_name": variable,
                 "role": role,
                 "section": "categorical_frequency",
+                "derived_source": derived_source,
+                "derived_method": derived_method,
+                "derived_bins": derived_bins,
                 "mean": np.nan,
                 "standard_deviation": np.nan,
                 "minimum": np.nan,
@@ -1299,6 +1392,73 @@ def _coerce_random_categorical_specs(
     return specs
 
 
+def _coerce_derived_categorical_specs(
+    derived: Iterable[DerivedCategoricalSpec | dict[str, Any]],
+) -> list[DerivedCategoricalSpec]:
+    specs: list[DerivedCategoricalSpec] = []
+    for item in derived:
+        if isinstance(item, DerivedCategoricalSpec):
+            specs.append(item)
+            continue
+        if not isinstance(item, dict):
+            raise ValueError("Derived categorical specs must be DerivedCategoricalSpec or dict.")
+        if "name" in item and "source" in item:
+            name = item["name"]
+            config = {key: value for key, value in item.items() if key != "name"}
+        elif len(item) == 1:
+            name, config = next(iter(item.items()))
+            if not isinstance(config, dict):
+                raise ValueError(f"Derived categorical variable {name!r} must be a mapping.")
+        else:
+            raise ValueError("Derived categorical specs must include name/source or one mapping.")
+        specs.append(_derived_spec_from_config(str(name), config))
+    return specs
+
+
+def _derived_spec_from_config(name: str, config: dict[str, Any]) -> DerivedCategoricalSpec:
+    source = config.get("source")
+    if source is None:
+        raise ValueError(f"Derived categorical variable {name!r} requires a source.")
+    method = str(config.get("method", "bins")).lower()
+    if method == "quantile":
+        bins = int(config.get("bins", 0))
+        if bins < 2:
+            raise ValueError(f"Derived quantile variable {name!r} requires bins >= 2.")
+        return DerivedCategoricalSpec(
+            name=name,
+            source=str(source),
+            method="quantile",
+            quantile_bins=bins,
+        )
+    bins_raw = config.get("bins")
+    if not isinstance(bins_raw, list) or not bins_raw:
+        raise ValueError(f"Derived categorical variable {name!r} requires non-empty bins.")
+    bins = []
+    previous_upper: float | None = None
+    open_ended_seen = False
+    for index, raw_bin in enumerate(bins_raw):
+        if not isinstance(raw_bin, dict) or "label" not in raw_bin:
+            raise ValueError(f"Derived bin {index + 1} for {name!r} requires a label.")
+        if open_ended_seen:
+            raise ValueError(f"Open-ended derived bin for {name!r} must be last.")
+        upper = raw_bin.get("upper")
+        if upper is None:
+            open_ended_seen = True
+            bins.append(DerivedCategoricalBinSpec(label=str(raw_bin["label"]), upper=None))
+            continue
+        upper_value = float(upper)
+        if previous_upper is not None and upper_value <= previous_upper:
+            raise ValueError(f"Derived bins for {name!r} must have increasing upper values.")
+        previous_upper = upper_value
+        bins.append(DerivedCategoricalBinSpec(label=str(raw_bin["label"]), upper=upper_value))
+    return DerivedCategoricalSpec(
+        name=name,
+        source=str(source),
+        method="bins",
+        bins=tuple(bins),
+    )
+
+
 def _coerce_categorical_specs(
     categorical: Iterable[CategoricalVariableSpec | dict[str, Any]],
 ) -> list[CategoricalVariableSpec]:
@@ -1377,6 +1537,32 @@ def _dummy_code_categorical(
     return np.column_stack(columns), names
 
 
+def _derive_categorical_series(
+    values: pd.Series,
+    spec: DerivedCategoricalSpec,
+) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").astype(float)
+    if spec.method == "quantile":
+        bins = int(spec.quantile_bins or 0)
+        labels = [f"Q{index}" for index in range(1, bins + 1)]
+        ranked = numeric.rank(method="first")
+        return pd.qcut(ranked, q=bins, labels=labels).astype(str)
+
+    labels: list[str] = []
+    for value in numeric:
+        matched = False
+        for bin_spec in spec.bins:
+            if bin_spec.upper is None or value <= bin_spec.upper:
+                labels.append(bin_spec.label)
+                matched = True
+                break
+        if not matched:
+            raise ValueError(
+                f"Derived categorical variable {spec.name!r} does not cover value {value}."
+            )
+    return pd.Series(labels, index=values.index, name=spec.name)
+
+
 def _ordered_categories(series: pd.Series) -> list[Any]:
     values = list(pd.unique(series.dropna()))
     try:
@@ -1443,17 +1629,62 @@ def _random_spec_for_output(
     return output
 
 
+def _derived_spec_for_output(
+    specs: Sequence[DerivedCategoricalSpec],
+) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for spec in specs:
+        if spec.method == "quantile":
+            output[spec.name] = {
+                "source": spec.source,
+                "method": "quantile",
+                "bins": spec.quantile_bins,
+            }
+        else:
+            output[spec.name] = {
+                "source": spec.source,
+                "bins": [
+                    (
+                        {"label": bin_spec.label}
+                        if bin_spec.upper is None
+                        else {"upper": bin_spec.upper, "label": bin_spec.label}
+                    )
+                    for bin_spec in spec.bins
+                ],
+            }
+    return output
+
+
+def _format_derived_bins(spec: DerivedCategoricalSpec) -> str:
+    if spec.method == "quantile":
+        return f"quantile:{spec.quantile_bins}"
+    parts = []
+    for bin_spec in spec.bins:
+        if bin_spec.upper is None:
+            parts.append(f"{bin_spec.label}:open")
+        else:
+            parts.append(f"{bin_spec.label}:<={bin_spec.upper:g}")
+    return ";".join(parts)
+
+
 def _validate_rpnb_model_roles(
     dependent: str,
-    offset: str,
+    offset: str | None,
     fixed_names: tuple[str, ...],
     fixed_categorical_names: tuple[str, ...],
     random_names: tuple[str, ...],
     random_categorical_names: tuple[str, ...],
     group_id: str | None,
 ) -> None:
-    for variable in (*fixed_names, *fixed_categorical_names, *random_names, *random_categorical_names):
-        if variable == offset:
+    if offset is not None:
+        for variable in (
+            *fixed_names,
+            *fixed_categorical_names,
+            *random_names,
+            *random_categorical_names,
+        ):
+            if variable != offset:
+                continue
             raise ValueError(
                 f"Offset variable {offset} has coefficient fixed at 1 and cannot be listed "
                 "as fixed or random."
@@ -1475,7 +1706,7 @@ def _validate_rpnb_model_roles(
     duplicates = _duplicates(
         (
             dependent,
-            offset,
+            *(() if offset is None else (offset,)),
             *fixed_names,
             *fixed_categorical_names,
             *random_names,

@@ -62,6 +62,13 @@ def test_parse_generic_ordered_model_spec():
                         }
                     }
                 },
+                "derived_categorical": {
+                    "speed_std_quartile": {
+                        "source": "speed_std",
+                        "method": "quantile",
+                        "bins": 4,
+                    }
+                },
                 "group_id": "UniqueID",
                 "categories": [0, 1, 2],
             }
@@ -74,6 +81,9 @@ def test_parse_generic_ordered_model_spec():
     assert spec.random[0].name == "speed_std"
     assert [item.name for item in spec.random_categorical] == ["Interstate"]
     assert spec.random_categorical[0].reference == 1
+    assert [item.name for item in spec.derived_categorical] == ["speed_std_quartile"]
+    assert spec.derived_categorical[0].source == "speed_std"
+    assert spec.derived_categorical[0].quantile_bins == 4
 
 
 def test_parse_generic_ordered_spec_rejects_duplicate_fixed_random_continuous():
@@ -180,6 +190,60 @@ def test_ordered_generic_categorical_reference_must_exist():
 
     with pytest.raises(ValueError, match="Reference category"):
         model.fit(data, save_run=False)
+
+
+def test_ordered_derived_categorical_fixed_and_random_parameters_are_materialized():
+    data = _generic_fake_ordered_data()
+    original = data.copy(deep=True)
+    model = RandomParametersOrderedProbit(
+        dependent="severity",
+        fixed=["speed_mean"],
+        fixed_categorical=[{"speed_std_cat": {"reference": "<5"}}],
+        random_categorical=[
+            {
+                "speed_std_quartile": {
+                    "reference": "Q1",
+                    "distribution": "normal",
+                    "start_mean": 0.0,
+                    "start_sd": 0.2,
+                }
+            }
+        ],
+        derived_categorical=[
+            {
+                "speed_std_cat": {
+                    "source": "speed_std",
+                    "bins": [
+                        {"upper": 5, "label": "<5"},
+                        {"upper": 7, "label": "5-7"},
+                        {"label": ">=7"},
+                    ],
+                }
+            },
+            {
+                "speed_std_quartile": {
+                    "source": "speed_std",
+                    "method": "quantile",
+                    "bins": 4,
+                }
+            },
+        ],
+        categories=[0, 1, 2],
+        draws=4,
+        maxiter=1,
+        checkpoint_interval=0,
+    )
+
+    results = model.fit(data, save_run=False)
+    parameters = set(results.parameter_table["parameter"])
+
+    assert "beta_fixed[speed_std_cat_5_7]" in parameters
+    assert "beta_random_mean[speed_std_quartile_Q2]" in parameters
+    assert "beta_random_sd[speed_std_quartile_Q4]" in parameters
+    assert results.model_spec["model"]["derived_categorical"]["speed_std_cat"]["source"] == (
+        "speed_std"
+    )
+    pd.testing.assert_frame_equal(data, original)
 
 
 def test_ordered_missing_drop_checks_random_only_variables():

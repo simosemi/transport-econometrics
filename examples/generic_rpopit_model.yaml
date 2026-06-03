@@ -11,6 +11,22 @@ model:
         reference: 0
       Year:
         reference: 2017
+      speed_std_cat:
+        reference: "<5"
+
+  derived_categorical:
+    speed_std_cat:
+      source: speed_std
+      bins:
+        - upper: 5
+          label: "<5"
+        - upper: 7
+          label: "5-7"
+        - label: ">=7"
+    speed_std_quartile:
+      source: speed_std
+      method: quantile
+      bins: 4
 
   random:
     continuous:
@@ -26,6 +42,11 @@ model:
     categorical:
       Interstate:
         reference: 1
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+      speed_std_quartile:
+        reference: Q1
         distribution: normal
         start_mean: 0.0
         start_sd: 0.3

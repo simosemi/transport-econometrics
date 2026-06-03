@@ -3,8 +3,8 @@
 `RPNB` is a research-grade Python package for Random Parameters Negative
 Binomial crash-frequency models estimated by simulated maximum likelihood.
 
-The model is NB2 with a log link and a log-offset whose coefficient is fixed at
-1:
+The model is NB2 with a log link. A log-offset can be supplied with coefficient
+fixed at 1; when no offset is supplied, RPNB uses a zero offset internally:
 
 ```text
 y_i ~ NB(mu_i, alpha)
@@ -21,8 +21,11 @@ Cholesky factor and report natural standard deviations and correlations.
 
 - CSV input with YAML model specifications.
 - Dependent count variable validation.
-- Offset variable added to `log(mu)` with coefficient fixed at 1.
+- Optional offset variable added to `log(mu)` with coefficient fixed at 1.
 - Fixed and normally distributed random covariates.
+- Fixed and random categorical variables with automatic dummy coding.
+- Derived categorical variables from numeric columns, including explicit bins
+  and quantile bins.
 - Optional group or panel likelihood.
 - Pseudo-random, Halton, and Sobol simulation draws.
 - Independent or correlated random parameters.
@@ -58,9 +61,10 @@ pytest
 
 ## YAML Model Specification
 
-The offset must already be on the log scale, for example `log_exposure` or
-`log_segment_length`. RPNB includes an intercept by default; set
-`intercept: false` to disable it.
+When an offset is supplied it must already be on the log scale, for example
+`log_exposure` or `log_segment_length`. Set `offset: null`, or omit `offset`,
+to estimate a count model without an offset. RPNB includes an intercept by
+default; set `intercept: false` to disable it.
 
 ```yaml
 model:
@@ -75,6 +79,21 @@ model:
         reference: 0
       Year:
         reference: 2017
+      speed_std_cat:
+        reference: "<5"
+  derived_categorical:
+    speed_std_cat:
+      source: speed_std
+      bins:
+        - upper: 5
+          label: "<5"
+        - upper: 7
+          label: "5-7"
+        - label: ">=7"
+    speed_std_quartile:
+      source: speed_std
+      method: quantile
+      bins: 4
   random:
     continuous:
       speed_std:
@@ -86,6 +105,12 @@ model:
         start_mean: 0.0
         start_sd: 0.3
       TruckPercent:
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+    categorical:
+      speed_std_quartile:
+        reference: Q1
         distribution: normal
         start_mean: 0.0
         start_sd: 0.3
@@ -102,7 +127,8 @@ simulation:
 estimation:
   optimizer: bfgs
   multistart: 1
-  random_seed: 12345
+  multistart_seed: 12345
+  multistart_scale: 0.25
   maxiter: 1000
   tolerance: 0.00001
   covariance: bfgs
@@ -115,11 +141,12 @@ output:
   directory: runs
 ```
 
-Categorical fixed variables are dummy-coded automatically. The declared
-reference category is dropped, and dummy coefficient names use
-`variable_value`, such as `Hour_1` and `Year_2018`. The older shorthand
-`fixed: [x1, x2]` and `random: {z1: {...}}` remains supported for continuous
-variables.
+Categorical fixed and random variables are dummy-coded automatically. The
+declared reference category is dropped, and dummy coefficient names use
+`variable_value`, such as `Hour_1` and `Year_2018`. Derived categorical
+variables are created inside the estimation working copy, so the raw CSV is not
+modified. The older shorthand `fixed: [x1, x2]` and `random: {z1: {...}}`
+remains supported for continuous variables.
 
 With `missing: drop`, RPNB drops rows with NaN/null values, blank strings, or
 non-finite numeric values in any required model column. The exported fit

@@ -23,6 +23,8 @@ from rpopit.checkpoint import (
 )
 from rpopit.config import (
     CategoricalVariableSpec,
+    DerivedCategoricalBinSpec,
+    DerivedCategoricalSpec,
     ModelSpec,
     RandomCategoricalVariableSpec,
     RandomParameterSpec,
@@ -64,6 +66,7 @@ class RandomParametersOrderedProbit:
         random_categorical: Sequence[
             RandomCategoricalVariableSpec | dict[str, Any]
         ] | None = None,
+        derived_categorical: Sequence[DerivedCategoricalSpec | dict[str, Any]] | None = None,
         group_id: str | None = None,
         categories: Sequence[Any] | None = None,
         draws: int = 200,
@@ -95,6 +98,13 @@ class RandomParametersOrderedProbit:
             _coerce_random_categorical_specs(random_categorical or ())
         )
         self.random_categorical = tuple(item.name for item in self.random_categorical_specs)
+        self.derived_categorical_specs = tuple(
+            _coerce_derived_categorical_specs(derived_categorical or ())
+        )
+        self.derived_categorical = tuple(item.name for item in self.derived_categorical_specs)
+        self.derived_source_columns = tuple(
+            dict.fromkeys(item.source for item in self.derived_categorical_specs)
+        )
         self.random_specs = self.random_continuous_specs
         self.random = tuple(item.name for item in self.random_specs)
         self.group_id = group_id
@@ -147,6 +157,7 @@ class RandomParametersOrderedProbit:
             fixed_categorical=spec.fixed_categorical,
             random=spec.random,
             random_categorical=spec.random_categorical,
+            derived_categorical=spec.derived_categorical,
             group_id=spec.group_id,
             categories=spec.categories,
             draws=spec.draws,
@@ -564,6 +575,9 @@ class RandomParametersOrderedProbit:
                     self.random_continuous_specs,
                     self.random_categorical_specs,
                 ),
+                "derived_categorical": _derived_spec_for_output(
+                    self.derived_categorical_specs
+                ),
                 "group_id": self.group_id,
                 "categories": None if self.categories is None else list(self.categories),
                 "correlated_random_parameters": self.correlated_random_parameters,
@@ -591,16 +605,7 @@ class RandomParametersOrderedProbit:
         }
 
     def _prepare_frame(self, frame: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
-        columns = [
-            self.dependent,
-            *self.fixed,
-            *self.fixed_categorical,
-            *self.random_continuous,
-            *self.random_categorical,
-        ]
-        if self.group_id is not None:
-            columns.append(self.group_id)
-        columns = list(dict.fromkeys(columns))
+        columns = list(self._raw_model_columns())
         missing_columns = [column for column in columns if column not in frame.columns]
         if missing_columns:
             raise ValueError(f"Data are missing required columns: {missing_columns}")
@@ -617,7 +622,7 @@ class RandomParametersOrderedProbit:
                 )
         if len(work) == 0:
             raise ValueError("No usable observations remain after missing-data handling.")
-        numeric_columns = [*self.fixed, *self.random_continuous]
+        numeric_columns = [*self.fixed, *self.random_continuous, *self.derived_source_columns]
         for column in numeric_columns:
             values = pd.to_numeric(work[column], errors="coerce")
             if values.isna().any():
@@ -625,6 +630,7 @@ class RandomParametersOrderedProbit:
             if not np.isfinite(values.to_numpy(dtype=float)).all():
                 raise ValueError(f"Column {column!r} contains non-finite values.")
             work[column] = values
+        self._materialize_derived_categorical(work)
         for spec in self.fixed_categorical_specs:
             if not _series_contains_value(work[spec.name], spec.reference):
                 raise ValueError(
@@ -636,6 +642,27 @@ class RandomParametersOrderedProbit:
                     f"Reference category {spec.reference!r} was not found in {spec.name!r}."
                 )
         return work
+
+    def _raw_model_columns(self) -> tuple[str, ...]:
+        derived_names = set(self.derived_categorical)
+        columns = [
+            self.dependent,
+            *self.fixed,
+            *(name for name in self.fixed_categorical if name not in derived_names),
+            *self.random_continuous,
+            *(name for name in self.random_categorical if name not in derived_names),
+            *self.derived_source_columns,
+        ]
+        if self.group_id is not None:
+            columns.append(self.group_id)
+        return tuple(dict.fromkeys(columns))
+
+    def _materialize_derived_categorical(self, work: pd.DataFrame) -> None:
+        for spec in self.derived_categorical_specs:
+            values = pd.to_numeric(work[spec.source], errors="coerce")
+            if values.isna().any():
+                raise ValueError(f"Derived categorical source {spec.source!r} contains non-numeric values.")
+            work[spec.name] = _derive_categorical_series(values, spec)
 
     def _fixed_design(self, work: pd.DataFrame) -> tuple[np.ndarray, tuple[str, ...]]:
         pieces: list[np.ndarray] = []
@@ -1058,6 +1085,73 @@ def _coerce_random_categorical_specs(
     return specs
 
 
+def _coerce_derived_categorical_specs(
+    derived: Iterable[DerivedCategoricalSpec | dict[str, Any]],
+) -> list[DerivedCategoricalSpec]:
+    specs: list[DerivedCategoricalSpec] = []
+    for item in derived:
+        if isinstance(item, DerivedCategoricalSpec):
+            specs.append(item)
+            continue
+        if not isinstance(item, dict):
+            raise ValueError("Derived categorical specs must be DerivedCategoricalSpec or dict.")
+        if "name" in item and "source" in item:
+            name = item["name"]
+            config = {key: value for key, value in item.items() if key != "name"}
+        elif len(item) == 1:
+            name, config = next(iter(item.items()))
+            if not isinstance(config, dict):
+                raise ValueError(f"Derived categorical variable {name!r} must be a mapping.")
+        else:
+            raise ValueError("Derived categorical specs must include name/source or one mapping.")
+        specs.append(_derived_spec_from_config(str(name), config))
+    return specs
+
+
+def _derived_spec_from_config(name: str, config: dict[str, Any]) -> DerivedCategoricalSpec:
+    source = config.get("source")
+    if source is None:
+        raise ValueError(f"Derived categorical variable {name!r} requires a source.")
+    method = str(config.get("method", "bins")).lower()
+    if method == "quantile":
+        bins = int(config.get("bins", 0))
+        if bins < 2:
+            raise ValueError(f"Derived quantile variable {name!r} requires bins >= 2.")
+        return DerivedCategoricalSpec(
+            name=name,
+            source=str(source),
+            method="quantile",
+            quantile_bins=bins,
+        )
+    bins_raw = config.get("bins")
+    if not isinstance(bins_raw, list) or not bins_raw:
+        raise ValueError(f"Derived categorical variable {name!r} requires non-empty bins.")
+    bins = []
+    previous_upper: float | None = None
+    open_ended_seen = False
+    for index, raw_bin in enumerate(bins_raw):
+        if not isinstance(raw_bin, dict) or "label" not in raw_bin:
+            raise ValueError(f"Derived bin {index + 1} for {name!r} requires a label.")
+        if open_ended_seen:
+            raise ValueError(f"Open-ended derived bin for {name!r} must be last.")
+        upper = raw_bin.get("upper")
+        if upper is None:
+            open_ended_seen = True
+            bins.append(DerivedCategoricalBinSpec(label=str(raw_bin["label"]), upper=None))
+            continue
+        upper_value = float(upper)
+        if previous_upper is not None and upper_value <= previous_upper:
+            raise ValueError(f"Derived bins for {name!r} must have increasing upper values.")
+        previous_upper = upper_value
+        bins.append(DerivedCategoricalBinSpec(label=str(raw_bin["label"]), upper=upper_value))
+    return DerivedCategoricalSpec(
+        name=name,
+        source=str(source),
+        method="bins",
+        bins=tuple(bins),
+    )
+
+
 def _coerce_categorical_specs(
     categorical: Iterable[CategoricalVariableSpec | dict[str, Any]],
 ) -> list[CategoricalVariableSpec]:
@@ -1132,6 +1226,32 @@ def _dummy_code_categorical(
     return np.column_stack(columns), names
 
 
+def _derive_categorical_series(
+    values: pd.Series,
+    spec: DerivedCategoricalSpec,
+) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").astype(float)
+    if spec.method == "quantile":
+        bins = int(spec.quantile_bins or 0)
+        labels = [f"Q{index}" for index in range(1, bins + 1)]
+        ranked = numeric.rank(method="first")
+        return pd.qcut(ranked, q=bins, labels=labels).astype(str)
+
+    labels: list[str] = []
+    for value in numeric:
+        matched = False
+        for bin_spec in spec.bins:
+            if bin_spec.upper is None or value <= bin_spec.upper:
+                labels.append(bin_spec.label)
+                matched = True
+                break
+        if not matched:
+            raise ValueError(
+                f"Derived categorical variable {spec.name!r} does not cover value {value}."
+            )
+    return pd.Series(labels, index=values.index, name=spec.name)
+
+
 def _ordered_categories(series: pd.Series) -> list[Any]:
     values = list(pd.unique(series.dropna()))
     try:
@@ -1195,6 +1315,32 @@ def _random_spec_for_output(
             }
             for item in categorical
         }
+    return output
+
+
+def _derived_spec_for_output(
+    specs: Sequence[DerivedCategoricalSpec],
+) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for spec in specs:
+        if spec.method == "quantile":
+            output[spec.name] = {
+                "source": spec.source,
+                "method": "quantile",
+                "bins": spec.quantile_bins,
+            }
+        else:
+            output[spec.name] = {
+                "source": spec.source,
+                "bins": [
+                    (
+                        {"label": bin_spec.label}
+                        if bin_spec.upper is None
+                        else {"upper": bin_spec.upper, "label": bin_spec.label}
+                    )
+                    for bin_spec in spec.bins
+                ],
+            }
     return output
 
 

@@ -24,6 +24,22 @@ model:
         reference: 0
       Year:
         reference: 2017
+      speed_std_cat:
+        reference: "<5"
+
+  derived_categorical:
+    speed_std_cat:
+      source: speed_std
+      bins:
+        - upper: 5
+          label: "<5"
+        - upper: 7
+          label: "5-7"
+        - label: ">=7"
+    speed_std_quartile:
+      source: speed_std
+      method: quantile
+      bins: 4
 
   random:
     continuous:
@@ -42,6 +58,11 @@ model:
     categorical:
       Interstate:
         reference: 1
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+      speed_std_quartile:
+        reference: Q1
         distribution: normal
         start_mean: 0.0
         start_sd: 0.3
@@ -73,6 +94,22 @@ model:
         reference: 0
       Year:
         reference: 2017
+      speed_std_cat:
+        reference: "<5"
+
+  derived_categorical:
+    speed_std_cat:
+      source: speed_std
+      bins:
+        - upper: 5
+          label: "<5"
+        - upper: 7
+          label: "5-7"
+        - label: ">=7"
+    speed_std_quartile:
+      source: speed_std
+      method: quantile
+      bins: 4
 
   random:
     continuous:
@@ -83,6 +120,11 @@ model:
     categorical:
       Interstate:
         reference: 1
+        distribution: normal
+        start_mean: 0.0
+        start_sd: 0.3
+      speed_std_quartile:
+        reference: Q1
         distribution: normal
         start_mean: 0.0
         start_sd: 0.3
@@ -103,6 +145,9 @@ estimation:
 
 - Every declared variable must exist in the input CSV.
 - A variable may appear in only one model role.
+- RPNB `offset` is optional. Omit it or set `offset: null` to use a zero offset.
+  If an offset is supplied, that same variable cannot be listed as fixed or
+  random.
 - `fixed.continuous` declares non-random fixed effects.
 - `fixed.categorical` declares non-random categorical/factor effects.
 - `random.continuous` declares random continuous parameters. Each variable
@@ -118,6 +163,12 @@ estimation:
 - Fixed and random categorical references must exist in the data after
   missing-row handling.
 - Fixed and random categorical variables are dummy-coded automatically.
+- `derived_categorical` creates factor variables from numeric source columns
+  inside the working estimation data. The raw CSV is not modified.
+- Explicit derived bins use increasing `upper` values and may end with one
+  open-ended bin that has only a `label`.
+- Quantile derived bins use `method: quantile` and `bins: 4` for quartiles or
+  `bins: 5` for quintiles. Generated labels are `Q1`, `Q2`, and so on.
 - The declared reference category is dropped.
 - Dummy names use `variable_value`, for example `Hour_1` or `Year_2018`.
 - Category ordering is deterministic; categories are sorted before dummy columns
