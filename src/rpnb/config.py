@@ -98,6 +98,7 @@ class ModelSpec:
     multistart: int = 1
     multistart_random_seed: int | None = 12345
     multistart_scale: float = 0.25
+    auto_simplify_random_parameters: bool = False
     covariance: str = "bfgs"
     chunk_size: int | None = 10_000
     workers: int = 1
@@ -218,6 +219,14 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
     )
     if multistart_scale < 0:
         raise ValueError("multistart_scale must be non-negative.")
+    auto_simplify_random_parameters = bool(
+        _first_present(
+            estimation,
+            "auto_simplify_random_parameters",
+            "auto_simplify",
+            default=False,
+        )
+    )
     covariance = str(_first_present(estimation, "covariance", "covariance_type", default="bfgs"))
     chunk_size_raw = _first_present(
         estimation, "chunk_size", "likelihood_chunk_size", default=None
@@ -266,6 +275,7 @@ def parse_model_spec(raw: dict[str, Any]) -> ModelSpec:
         multistart=multistart,
         multistart_random_seed=multistart_random_seed,
         multistart_scale=multistart_scale,
+        auto_simplify_random_parameters=auto_simplify_random_parameters,
         covariance=covariance.lower(),
         chunk_size=chunk_size,
         workers=int(workers_raw),

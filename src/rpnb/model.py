@@ -41,6 +41,9 @@ from rpnb.optimizer import (
 from rpnb.output import RPNBResults, build_parameter_table
 
 
+RANDOM_SD_ZERO_TOLERANCE = 1e-6
+
+
 @dataclass
 class ParameterState:
     fixed: np.ndarray
@@ -84,6 +87,7 @@ class RandomParametersNegativeBinomial:
         multistart: int = 1,
         multistart_random_seed: int | None = 12345,
         multistart_scale: float = 0.25,
+        auto_simplify_random_parameters: bool = False,
         covariance: str = "bfgs",
         chunk_size: int | None = 10_000,
         workers: int = 1,
@@ -126,6 +130,7 @@ class RandomParametersNegativeBinomial:
         self.multistart = int(multistart)
         self.multistart_random_seed = multistart_random_seed
         self.multistart_scale = float(multistart_scale)
+        self.auto_simplify_random_parameters = bool(auto_simplify_random_parameters)
         self.covariance = covariance.lower()
         self.chunk_size = chunk_size
         self.workers = int(workers)
@@ -188,6 +193,7 @@ class RandomParametersNegativeBinomial:
             multistart=spec.multistart,
             multistart_random_seed=spec.multistart_random_seed,
             multistart_scale=spec.multistart_scale,
+            auto_simplify_random_parameters=spec.auto_simplify_random_parameters,
             covariance=spec.covariance,
             chunk_size=spec.chunk_size,
             workers=spec.workers,
@@ -479,6 +485,10 @@ class RandomParametersNegativeBinomial:
             n_fixed=len(fixed_names),
             objective=objective,
         )
+        random_parameter_screening = self._random_parameter_screening(
+            parameter_table,
+            random_parameter_tests,
+        )
         if process_pool is not None:
             process_pool.shutdown()
 
@@ -544,6 +554,34 @@ class RandomParametersNegativeBinomial:
             "selected_start_id": selected_start_id,
             "n_local_optima": int(local_optima_count),
             "multiple_local_optima_found": bool(multiple_local_optima_found),
+            "random_parameter_lr_tests_executed": bool(
+                q > 0
+                and not self.correlated_random_parameters
+                and not random_parameter_tests.empty
+            ),
+            "n_random_parameter_lr_tests": int(
+                random_parameter_tests["restricted_log_likelihood"].notna().sum()
+                if not random_parameter_tests.empty
+                and "restricted_log_likelihood" in random_parameter_tests.columns
+                else 0
+            ),
+            "n_random_parameters_screened": int(len(random_parameter_screening)),
+            "n_random_parameters_screen_keep_random": int(
+                random_parameter_screening["recommendation"]
+                .astype(str)
+                .eq("Keep Random")
+                .sum()
+            )
+            if not random_parameter_screening.empty
+            else 0,
+            "n_random_parameters_screen_convert_to_fixed": int(
+                random_parameter_screening["recommendation"]
+                .astype(str)
+                .eq("Convert to Fixed")
+                .sum()
+            )
+            if not random_parameter_screening.empty
+            else 0,
         }
         termination_report = optimizer_termination_report(
             diagnostics.converged,
@@ -598,12 +636,22 @@ class RandomParametersNegativeBinomial:
             multistart_summary=multistart_summary,
             local_solutions=local_solutions,
             random_parameter_tests=random_parameter_tests,
+            random_parameter_screening=random_parameter_screening,
             predictions=predictions,
             marginal_effects=effects,
             run_dir=run_dir,
             model_spec=self.to_spec_dict(),
             timing=timing,
         )
+        if self.auto_simplify_random_parameters:
+            summary, simplified_results = self._auto_simplify_random_parameters(
+                work,
+                random_parameter_screening,
+                results,
+                logger,
+            )
+            results.auto_simplify_summary = summary
+            results.auto_simplified_results = simplified_results
         if export:
             results.export(run_dir)
             logger.info("Exported results to %s.", run_dir)
@@ -644,6 +692,7 @@ class RandomParametersNegativeBinomial:
                 "random_seed": self.multistart_random_seed,
                 "multistart_seed": self.multistart_random_seed,
                 "multistart_scale": self.multistart_scale,
+                "auto_simplify_random_parameters": self.auto_simplify_random_parameters,
                 "covariance": self.covariance,
                 "chunk_size": self.chunk_size,
                 "workers": self.workers,
@@ -1120,11 +1169,15 @@ class RandomParametersNegativeBinomial:
                 columns=[
                     "parameter",
                     "variable",
+                    "unrestricted_log_likelihood",
                     "full_log_likelihood",
                     "restricted_log_likelihood",
                     "delta_log_likelihood",
                     "lr_statistic",
                     "p_value",
+                    "restricted_converged",
+                    "restricted_status",
+                    "restricted_message",
                     "delta_AIC",
                     "delta_BIC",
                     "recommendation",
@@ -1136,11 +1189,15 @@ class RandomParametersNegativeBinomial:
                     {
                         "parameter": f"beta_random_sd[{name}]",
                         "variable": name,
+                        "unrestricted_log_likelihood": full_log_likelihood,
                         "full_log_likelihood": full_log_likelihood,
                         "restricted_log_likelihood": np.nan,
                         "delta_log_likelihood": np.nan,
                         "lr_statistic": np.nan,
                         "p_value": np.nan,
+                        "restricted_converged": False,
+                        "restricted_status": np.nan,
+                        "restricted_message": "Not tested for correlated random parameters.",
                         "delta_AIC": np.nan,
                         "delta_BIC": np.nan,
                         "recommendation": "Not Tested - Correlated Random Parameters",
@@ -1183,17 +1240,261 @@ class RandomParametersNegativeBinomial:
                 {
                     "parameter": f"beta_random_sd[{name}]",
                     "variable": name,
+                    "unrestricted_log_likelihood": float(full_log_likelihood),
                     "full_log_likelihood": float(full_log_likelihood),
                     "restricted_log_likelihood": restricted_ll,
                     "delta_log_likelihood": delta_ll,
                     "lr_statistic": lr_stat,
                     "p_value": p_value,
+                    "restricted_converged": diagnostics.converged,
+                    "restricted_status": diagnostics.status,
+                    "restricted_message": diagnostics.message,
                     "delta_AIC": float(full_aic - restricted_aic),
                     "delta_BIC": float(full_bic - restricted_bic),
                     "recommendation": recommendation,
                 }
             )
         return pd.DataFrame(rows)
+
+    def _random_parameter_screening(
+        self,
+        parameter_table: pd.DataFrame,
+        random_parameter_tests: pd.DataFrame,
+    ) -> pd.DataFrame:
+        mean_rows = parameter_table.loc[
+            parameter_table["component"] == "random_mean"
+        ].set_index("variable")
+        sd_rows = parameter_table.loc[
+            parameter_table["component"] == "random_sd"
+        ].set_index("variable")
+        if sd_rows.empty:
+            return pd.DataFrame(
+                columns=[
+                    "parameter",
+                    "variable",
+                    "mean_estimate",
+                    "sd_estimate",
+                    "sd_p_value",
+                    "lr_p_value",
+                    "sd_effectively_zero",
+                    "sd_not_statistically_significant",
+                    "recommendation",
+                ]
+            )
+
+        lr_by_variable = (
+            random_parameter_tests.set_index("variable")
+            if not random_parameter_tests.empty and "variable" in random_parameter_tests.columns
+            else pd.DataFrame()
+        )
+        rows: list[dict[str, Any]] = []
+        for variable, sd_row in sd_rows.iterrows():
+            mean_estimate = (
+                mean_rows.loc[variable, "estimate"] if variable in mean_rows.index else np.nan
+            )
+            sd_estimate = float(sd_row["estimate"])
+            sd_p_value = _as_optional_float(sd_row.get("p_value"))
+            lr_p_value = (
+                _as_optional_float(lr_by_variable.loc[variable, "p_value"])
+                if not lr_by_variable.empty and variable in lr_by_variable.index
+                else np.nan
+            )
+            sd_effectively_zero = abs(sd_estimate) <= RANDOM_SD_ZERO_TOLERANCE
+            sd_not_significant = (not np.isfinite(sd_p_value)) or sd_p_value >= 0.05
+            recommendation = (
+                "Convert to Fixed"
+                if sd_effectively_zero or sd_not_significant
+                else "Keep Random"
+            )
+            rows.append(
+                {
+                    "parameter": sd_row["parameter"],
+                    "variable": variable,
+                    "mean_estimate": float(mean_estimate)
+                    if pd.notna(mean_estimate)
+                    else np.nan,
+                    "sd_estimate": sd_estimate,
+                    "sd_p_value": sd_p_value,
+                    "lr_p_value": lr_p_value,
+                    "sd_effectively_zero": bool(sd_effectively_zero),
+                    "sd_not_statistically_significant": bool(sd_not_significant),
+                    "recommendation": recommendation,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _auto_simplify_random_parameters(
+        self,
+        work: pd.DataFrame,
+        screening: pd.DataFrame,
+        full_results: RPNBResults,
+        logger: logging.Logger,
+    ) -> tuple[pd.DataFrame, RPNBResults | None]:
+        if self.correlated_random_parameters:
+            return (
+                pd.DataFrame(
+                    [
+                        _auto_simplify_row(
+                            model="full_random",
+                            results=full_results,
+                            selected=True,
+                            note="Auto-simplify is not applied to correlated random parameters.",
+                        )
+                    ]
+                ),
+                None,
+            )
+        if screening.empty:
+            return (
+                pd.DataFrame(
+                    [
+                        _auto_simplify_row(
+                            model="full_random",
+                            results=full_results,
+                            selected=True,
+                            note="No random parameters to screen.",
+                        )
+                    ]
+                ),
+                None,
+            )
+
+        convert_variables = set(
+            screening.loc[
+                screening["recommendation"].astype(str).eq("Convert to Fixed"),
+                "variable",
+            ].astype(str)
+        )
+        if not convert_variables:
+            return (
+                pd.DataFrame(
+                    [
+                        _auto_simplify_row(
+                            model="full_random",
+                            results=full_results,
+                            selected=True,
+                            note="Screening retained all random parameters.",
+                        )
+                    ]
+                ),
+                None,
+            )
+
+        simplified_frame = work.copy()
+        fixed_additions: list[str] = []
+        remaining_random_continuous: list[RandomParameterSpec] = []
+        for spec in self.random_continuous_specs:
+            if spec.name in convert_variables:
+                fixed_additions.append(spec.name)
+            else:
+                remaining_random_continuous.append(spec)
+
+        remaining_random_categorical: list[RandomCategoricalVariableSpec] = []
+        categorical_notes: list[str] = []
+        for spec in self.random_categorical_specs:
+            dummy_table, dummy_names = _dummy_code_categorical(
+                simplified_frame[spec.name],
+                spec.name,
+                spec.reference,
+            )
+            dummy_set = set(dummy_names)
+            converted_dummies = dummy_set & convert_variables
+            if not converted_dummies:
+                remaining_random_categorical.append(spec)
+                continue
+            if converted_dummies == dummy_set:
+                for column_index, dummy_name in enumerate(dummy_names):
+                    simplified_frame[dummy_name] = dummy_table[:, column_index]
+                    fixed_additions.append(dummy_name)
+            else:
+                remaining_random_categorical.append(spec)
+                categorical_notes.append(
+                    f"Kept all random dummies for {spec.name} because only a subset "
+                    "screened for conversion."
+                )
+
+        if not fixed_additions and len(remaining_random_continuous) == len(
+            self.random_continuous_specs
+        ) and len(remaining_random_categorical) == len(self.random_categorical_specs):
+            note = "No convertible random parameters were available after screening."
+            if categorical_notes:
+                note = f"{note} {' '.join(categorical_notes)}"
+            return (
+                pd.DataFrame(
+                    [
+                        _auto_simplify_row(
+                            model="full_random",
+                            results=full_results,
+                            selected=True,
+                            note=note,
+                        )
+                    ]
+                ),
+                None,
+            )
+
+        logger.info(
+            "Auto-simplifying random parameters by converting %s to fixed effects.",
+            fixed_additions,
+        )
+        simplified_model = RandomParametersNegativeBinomial(
+            dependent=self.dependent,
+            offset=self.offset,
+            fixed=(*self.fixed, *fixed_additions),
+            fixed_categorical=self.fixed_categorical_specs,
+            random=tuple(remaining_random_continuous),
+            random_categorical=tuple(remaining_random_categorical),
+            derived_categorical=self.derived_categorical_specs,
+            group_id=self.group_id,
+            intercept=self.intercept,
+            draws=self.draws,
+            draw_type=self.draw_type,
+            correlated_random_parameters=False,
+            seed=self.seed,
+            maxiter=self.maxiter,
+            tolerance=self.tolerance,
+            optimizer=self.optimizer,
+            multistart=self.multistart,
+            multistart_random_seed=self.multistart_random_seed,
+            multistart_scale=self.multistart_scale,
+            auto_simplify_random_parameters=False,
+            covariance=self.covariance,
+            chunk_size=self.chunk_size,
+            workers=self.workers,
+            checkpoint_interval=0,
+            start_alpha=self.start_alpha,
+            output_dir=self.output_dir,
+            missing=self.missing,
+        )
+        simplified_results = simplified_model.fit(
+            simplified_frame,
+            save_run=False,
+            export=False,
+        )
+        full_aic = float(full_results.aic)
+        simplified_aic = float(simplified_results.aic)
+        selected = "simplified_fixed" if simplified_aic < full_aic else "full_random"
+        note = "Converted screened random parameters to fixed effects."
+        if categorical_notes:
+            note = f"{note} {' '.join(categorical_notes)}"
+        summary = pd.DataFrame(
+            [
+                _auto_simplify_row(
+                    model="full_random",
+                    results=full_results,
+                    selected=selected == "full_random",
+                    note="Original full random-parameter model.",
+                ),
+                _auto_simplify_row(
+                    model="simplified_fixed",
+                    results=simplified_results,
+                    selected=selected == "simplified_fixed",
+                    note=note,
+                    converted_parameters=",".join(fixed_additions),
+                ),
+            ]
+        )
+        return summary, simplified_results
 
 
 RPNBModel = RandomParametersNegativeBinomial
@@ -1305,6 +1606,35 @@ def _count_distinct_local_optima(
 
 def _sum_optional_ints(values: Iterable[int | None]) -> int:
     return int(sum(0 if value is None else int(value) for value in values))
+
+
+def _as_optional_float(value: Any) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return numeric if np.isfinite(numeric) else np.nan
+
+
+def _auto_simplify_row(
+    model: str,
+    results: RPNBResults,
+    selected: bool,
+    note: str,
+    converted_parameters: str = "",
+) -> dict[str, Any]:
+    return {
+        "model": model,
+        "selected": bool(selected),
+        "log_likelihood": results.log_likelihood,
+        "AIC": results.aic,
+        "BIC": results.bic,
+        "alpha": results.alpha,
+        "n_parameters": results.fit_statistics.get("n_parameters"),
+        "convergence_quality": results.convergence.get("convergence_quality"),
+        "converted_parameters": converted_parameters,
+        "note": note,
+    }
 
 
 def _variable_summary_row(

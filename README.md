@@ -40,6 +40,7 @@ Cholesky factor and report natural standard deviations and correlations.
 - Alternative optimizers: `bfgs`, `lbfgsb`, `nelder-mead`, and `powell`.
 - Multi-start optimization with seeded perturbations around supplied start values.
 - Random-parameter likelihood-ratio tests for independent random parameters.
+- Random-parameter screening and optional auto-simplified refits.
 - Run comparison reports that rank candidate RPNB models automatically.
 - NLOGIT audit report generation for checking likelihood, draws, offset, and
   panel-likelihood assumptions.
@@ -133,6 +134,7 @@ estimation:
   multistart: 1
   multistart_seed: 12345
   multistart_scale: 0.25
+  auto_simplify_random_parameters: false
   maxiter: 1000
   tolerance: 0.00001
   covariance: bfgs
@@ -202,6 +204,10 @@ Each run creates a timestamped directory containing:
 - `multistart_summary.html`
 - `multistart_local_solutions.csv`
 - `random_parameter_tests.csv`
+- `random_parameter_tests.xlsx`
+- `random_parameter_tests.html`
+- `random_parameter_screening.csv`
+- `auto_simplify_summary.csv`, when `auto_simplify_random_parameters: true`
 - `predictions.csv`
 - `marginal_effects.csv`
 - `nlogit_style_report.txt`
@@ -225,9 +231,20 @@ solutions are exported, and fit statistics report whether multiple distinct
 local optima were found.
 
 For independent random parameters, RPNB also writes
-`random_parameter_tests.csv`. Each row fits a restricted model with that
-parameter's SD fixed near zero, reports the LR statistic and p-value, and
-recommends either `Keep Random` or `Treat as Fixed`.
+`random_parameter_tests.csv`, `random_parameter_tests.xlsx`, and
+`random_parameter_tests.html`. Each row fits a restricted model with that
+parameter's SD fixed near zero, reports unrestricted and restricted
+log-likelihoods, the LR statistic, and p-value, and recommends either
+`Keep Random` or `Treat as Fixed`.
+
+RPNB also writes `random_parameter_screening.csv`. Screening reports each random
+parameter's mean estimate, SD estimate, SD p-value, flags SDs that are
+effectively zero or not statistically significant, and recommends either
+`Keep Random` or `Convert to Fixed`. Set
+`estimation.auto_simplify_random_parameters: true` to refit a simplified model
+with screened continuous random parameters converted to fixed effects. The
+simplified model is exported under `auto_simplified_model/`, and
+`auto_simplify_summary.csv` compares the full and simplified AIC/BIC.
 
 Compare completed RPNB runs with:
 
@@ -236,7 +253,8 @@ python -m rpnb.compare_runs --runs run1 run2 run3 --out comparison_report
 ```
 
 The comparison utility ranks models by AIC and reports LL, AIC, BIC, alpha,
-convergence quality, random-SD significance, and parameter counts.
+convergence quality, LR-test random/fixed counts, screening counts, random-SD
+significance, and parameter counts.
 
 Generate an NLOGIT audit note with:
 

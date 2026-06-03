@@ -22,6 +22,9 @@ class RPNBResults:
     multistart_summary: pd.DataFrame | None = None
     local_solutions: pd.DataFrame | None = None
     random_parameter_tests: pd.DataFrame | None = None
+    random_parameter_screening: pd.DataFrame | None = None
+    auto_simplify_summary: pd.DataFrame | None = None
+    auto_simplified_results: "RPNBResults | None" = None
     predictions: pd.DataFrame | None = None
     marginal_effects: pd.DataFrame | None = None
     run_dir: Path | None = None
@@ -92,6 +95,14 @@ class RPNBResults:
             paths["local_solutions_csv"] = directory / "multistart_local_solutions.csv"
         if self.random_parameter_tests is not None:
             paths["random_parameter_tests_csv"] = directory / "random_parameter_tests.csv"
+            paths["random_parameter_tests_xlsx"] = directory / "random_parameter_tests.xlsx"
+            paths["random_parameter_tests_html"] = directory / "random_parameter_tests.html"
+        if self.random_parameter_screening is not None:
+            paths["random_parameter_screening_csv"] = directory / "random_parameter_screening.csv"
+        if self.auto_simplify_summary is not None:
+            paths["auto_simplify_summary_csv"] = directory / "auto_simplify_summary.csv"
+        if self.auto_simplified_results is not None:
+            paths["auto_simplified_model_dir"] = directory / "auto_simplified_model"
 
         self.parameter_table.to_csv(paths["coefficients_csv"], index=False)
         pd.DataFrame([self.fit_statistics]).to_csv(paths["fit_statistics_csv"], index=False)
@@ -125,6 +136,27 @@ class RPNBResults:
             self.random_parameter_tests.to_csv(
                 paths["random_parameter_tests_csv"], index=False
             )
+            with pd.ExcelWriter(paths["random_parameter_tests_xlsx"], engine="openpyxl") as writer:
+                self.random_parameter_tests.to_excel(
+                    writer, sheet_name="random_parameter_tests", index=False
+                )
+            paths["random_parameter_tests_html"].write_text(
+                _standalone_table_html(
+                    "RPNB random parameter LR tests",
+                    self.random_parameter_tests,
+                ),
+                encoding="utf-8",
+            )
+        if self.random_parameter_screening is not None:
+            self.random_parameter_screening.to_csv(
+                paths["random_parameter_screening_csv"], index=False
+            )
+        if self.auto_simplify_summary is not None:
+            self.auto_simplify_summary.to_csv(
+                paths["auto_simplify_summary_csv"], index=False
+            )
+        if self.auto_simplified_results is not None:
+            self.auto_simplified_results.export(paths["auto_simplified_model_dir"])
 
         if self.predictions is not None:
             paths["predictions_csv"] = directory / "predictions.csv"
@@ -157,6 +189,14 @@ class RPNBResults:
             if self.random_parameter_tests is not None:
                 self.random_parameter_tests.to_excel(
                     writer, sheet_name="random_parameter_tests", index=False
+                )
+            if self.random_parameter_screening is not None:
+                self.random_parameter_screening.to_excel(
+                    writer, sheet_name="random_parameter_screening", index=False
+                )
+            if self.auto_simplify_summary is not None:
+                self.auto_simplify_summary.to_excel(
+                    writer, sheet_name="auto_simplify", index=False
                 )
             if self.predictions is not None:
                 self.predictions.to_excel(writer, sheet_name="predictions", index=False)
@@ -209,6 +249,20 @@ class RPNBResults:
                 [
                     "<h2>Random parameter LR tests</h2>",
                     self.random_parameter_tests.to_html(index=False),
+                ]
+            )
+        if self.random_parameter_screening is not None:
+            sections.extend(
+                [
+                    "<h2>Random parameter screening</h2>",
+                    self.random_parameter_screening.to_html(index=False),
+                ]
+            )
+        if self.auto_simplify_summary is not None:
+            sections.extend(
+                [
+                    "<h2>Auto-simplify random parameters</h2>",
+                    self.auto_simplify_summary.to_html(index=False),
                 ]
             )
         if self.marginal_effects is not None:
@@ -423,3 +477,19 @@ def _format_float(value: Any) -> str:
     if not np.isfinite(numeric):
         return ""
     return f"{numeric:.6f}"
+
+
+def _standalone_table_html(title: str, table: pd.DataFrame) -> str:
+    return "\n".join(
+        [
+            "<!doctype html>",
+            f"<html><head><meta charset=\"utf-8\"><title>{title}</title>",
+            "<style>body{font-family:Arial,sans-serif;max-width:1200px;margin:2rem auto;}"
+            "table{border-collapse:collapse;margin-bottom:2rem;}td,th{border:1px solid #ddd;"
+            "padding:0.35rem 0.5rem;}th{background:#f5f5f5;}</style>",
+            "</head><body>",
+            f"<h1>{title}</h1>",
+            table.to_html(index=False),
+            "</body></html>",
+        ]
+    )

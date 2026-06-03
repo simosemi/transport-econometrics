@@ -26,6 +26,7 @@ def test_parse_model_spec_accepts_offset_and_random_parameters():
                 "multistart": 3,
                 "multistart_seed": 987,
                 "multistart_scale": 0.5,
+                "auto_simplify_random_parameters": True,
             },
         }
     )
@@ -41,6 +42,7 @@ def test_parse_model_spec_accepts_offset_and_random_parameters():
     assert spec.multistart == 3
     assert spec.multistart_random_seed == 987
     assert spec.multistart_scale == 0.5
+    assert spec.auto_simplify_random_parameters
 
 
 def test_parse_model_spec_allows_missing_and_null_offset():

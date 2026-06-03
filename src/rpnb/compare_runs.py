@@ -78,8 +78,15 @@ def compare_runs(run_dirs: Sequence[str | Path]) -> RPNBRunComparison:
         convergence = _read_optional_single_row(run_path / "convergence.csv")
         coefficients = _read_coefficients(run_path / "coefficients.csv")
         random_tests = _read_optional_frame(run_path / "random_parameter_tests.csv")
+        random_screening = _read_optional_frame(
+            run_path / "random_parameter_screening.csv"
+        )
         run_label = run_path.name
-        random_sd_summary = _random_sd_significance(coefficients, random_tests)
+        random_sd_summary = _random_sd_significance(
+            coefficients,
+            random_tests,
+            random_screening,
+        )
 
         metric_rows.append(
             {
@@ -98,7 +105,13 @@ def compare_runs(run_dirs: Sequence[str | Path]) -> RPNBRunComparison:
             _parameter_rows(run_label, run_path, coefficients, "random_mean")
         )
         random_sd_rows.extend(
-            _parameter_rows(run_label, run_path, coefficients, "random_sd")
+            _parameter_rows(
+                run_label,
+                run_path,
+                coefficients,
+                "random_sd",
+                random_screening=random_screening,
+            )
         )
 
     return RPNBRunComparison(
@@ -169,21 +182,37 @@ def _parameter_rows(
     run_path: Path,
     coefficients: pd.DataFrame,
     component: str,
+    random_screening: pd.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     subset = coefficients.loc[coefficients["component"] == component]
+    screening_by_variable = (
+        random_screening.set_index("variable")
+        if random_screening is not None
+        and not random_screening.empty
+        and "variable" in random_screening.columns
+        else pd.DataFrame()
+    )
     for row in subset.to_dict(orient="records"):
+        variable = row.get("variable")
+        screening_recommendation = None
+        if not screening_by_variable.empty and variable in screening_by_variable.index:
+            screening_recommendation = screening_by_variable.loc[
+                variable,
+                "recommendation",
+            ]
         rows.append(
             {
                 "run": run_label,
                 "run_dir": str(run_path),
                 "parameter": row.get("parameter"),
-                "variable": row.get("variable"),
+                "variable": variable,
                 "estimate": row.get("estimate"),
                 "std_error": row.get("std_error"),
                 "z_value": row.get("z_value"),
                 "p_value": row.get("p_value"),
                 "significance": row.get("significance"),
+                "screening_recommendation": screening_recommendation,
             }
         )
     return rows
@@ -207,6 +236,7 @@ def _get(mapping: dict[str, Any], key: str) -> Any:
 def _random_sd_significance(
     coefficients: pd.DataFrame,
     random_tests: pd.DataFrame,
+    random_screening: pd.DataFrame,
 ) -> dict[str, Any]:
     sd_rows = coefficients.loc[coefficients["component"] == "random_sd"]
     p_values = (
@@ -234,9 +264,44 @@ def _random_sd_significance(
             random_tests["recommendation"].astype(str).eq("Treat as Fixed").sum()
         )
     else:
-        summary["n_lr_keep_random"] = None
-        summary["n_lr_treat_fixed"] = None
+        summary["n_lr_keep_random"] = 0
+        summary["n_lr_treat_fixed"] = 0
+    if not random_screening.empty and "recommendation" in random_screening.columns:
+        recommendations = random_screening["recommendation"].astype(str)
+        summary["n_screen_keep_random"] = int(recommendations.eq("Keep Random").sum())
+        summary["n_screen_convert_to_fixed"] = int(
+            recommendations.eq("Convert to Fixed").sum()
+        )
+        summary["n_sd_effectively_zero"] = int(
+            _boolean_series(
+                random_screening.get("sd_effectively_zero", pd.Series(dtype=bool))
+            ).sum()
+        )
+        summary["n_sd_not_significant"] = int(
+            _boolean_series(
+                random_screening.get(
+                    "sd_not_statistically_significant",
+                    pd.Series(dtype=bool),
+                )
+            ).sum()
+        )
+    else:
+        summary["n_screen_keep_random"] = 0
+        summary["n_screen_convert_to_fixed"] = 0
+        summary["n_sd_effectively_zero"] = 0
+        summary["n_sd_not_significant"] = 0
     return summary
+
+
+def _boolean_series(values: Any) -> pd.Series:
+    series = pd.Series(values)
+    if series.empty:
+        return pd.Series(dtype=bool)
+    return series.map(
+        lambda value: str(value).strip().lower() in {"true", "1", "yes"}
+        if not isinstance(value, bool)
+        else value
+    ).fillna(False)
 
 
 def _rank_metrics(metrics: pd.DataFrame) -> pd.DataFrame:

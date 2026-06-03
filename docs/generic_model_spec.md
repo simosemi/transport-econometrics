@@ -76,6 +76,7 @@ estimation:
   multistart: 1
   multistart_seed: 12345
   multistart_scale: 0.25
+  auto_simplify_random_parameters: false
 ```
 
 ## rpopit Ordered Probit Model
@@ -139,6 +140,7 @@ estimation:
   multistart: 1
   multistart_seed: 12345
   multistart_scale: 0.25
+  auto_simplify_random_parameters: false
 ```
 
 ## Validation Rules
@@ -289,14 +291,32 @@ When multi-start is enabled, RPNB and rpopit export:
   metrics, random parameter mean and SD sections, dispersion section when
   applicable, and significance stars
 
-For independent RPNB random parameters, `random_parameter_tests.csv` is also
+For independent RPNB random parameters, `random_parameter_tests.csv`,
+`random_parameter_tests.xlsx`, and `random_parameter_tests.html` are also
 exported. For each random parameter, RPNB fits a restricted model with that
 parameter's SD fixed near zero and reports:
 
-- full and restricted log-likelihood
+- unrestricted and restricted log-likelihood
 - LR statistic and p-value
 - delta LL, delta AIC, and delta BIC
 - recommendation: `Keep Random` or `Treat as Fixed`
+
+RPNB also exports `random_parameter_screening.csv`. Screening reports:
+
+- random-parameter mean estimate
+- random-parameter SD estimate
+- SD p-value from the coefficient table
+- whether the SD estimate is effectively zero
+- whether the SD is not statistically significant
+- recommendation: `Keep Random` or `Convert to Fixed`
+
+Set `estimation.auto_simplify_random_parameters: true` to refit a simplified
+model after screening. Screened continuous random parameters are moved to fixed
+effects; random categorical sources are moved to fixed generated dummies only
+when all of their generated dummies screen for conversion. The full model stays
+in the main run directory, the simplified model is exported under
+`auto_simplified_model/`, and `auto_simplify_summary.csv` compares LL, AIC, BIC,
+alpha, parameter count, convergence quality, and the selected model.
 
 RPNB run directories can be compared after estimation with:
 
@@ -305,9 +325,9 @@ python -m rpnb.compare_runs --runs run1 run2 run3 --out comparison_report
 ```
 
 The comparison report exports CSV, Excel, and HTML files for LL, AIC, BIC,
-alpha, convergence quality, random-SD significance, parameter count, random
-parameter means, and random parameter SDs. Models are ranked automatically by
-AIC, with LL and BIC ranks also included.
+alpha, convergence quality, LR-test counts, screening counts, random-SD
+significance, parameter count, random parameter means, and random parameter SDs.
+Models are ranked automatically by AIC, with LL and BIC ranks also included.
 
 RPNB can also generate an NLOGIT audit note:
 
